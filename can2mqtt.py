@@ -36,7 +36,6 @@ def send_can_message_and_get_response(module, relay, state=None):
     message = can.Message(arbitration_id=0x01FC0002 | (module << 8), data=data, is_extended_id=True)
 
     # Send the CAN message
-    print(f"Sending CAN message: {message}")
     bus.send(message)
 
     # If no state is provided, wait for a response from the Dobiss system and parse the response to get the state of the light
