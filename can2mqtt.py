@@ -16,6 +16,12 @@ bus = can.interface.Bus(channel='can0', bustype='socketcan', bitrate=125000)
 client = mqtt.Client()
 client.connect("localhost", 1883)  # Replace with your MQTT broker URL
 
+# Function to convert an address to a module and relay
+def address_to_module_and_relay(address):
+    module = int(address[:2], 16)
+    relay = int(address[2:], 16)
+    return module, relay
+
 # Function to send a CAN message and get a response
 def send_can_message_and_get_response(module, relay, state=None):
     # Construct the CAN data
@@ -57,8 +63,7 @@ def control_light(address, state):
     for light in config['lights']:
         if light['address'] == address:
             # Convert the address to a module and relay
-            module = int(light['address'][:2], 16)
-            relay = int(light['address'][2:], 16)
+            module, relay = address_to_module_and_relay(light['address'])
 
             # Send the CAN message
             print(f"Controlling light: {light['name']} (address: {address}, state: {state})")
@@ -72,8 +77,7 @@ def control_light(address, state):
 def poll_light_states():
     for light in config['lights']:
         # Convert the address to a module and relay
-        module = int(light['address'][:2], 16)
-        relay = int(light['address'][2:], 16)
+        module, relay = address_to_module_and_relay(light['address'])
 
         # Get the state of the light
         send_can_message_and_get_response(module, relay)
