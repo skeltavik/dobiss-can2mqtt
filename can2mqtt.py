@@ -42,7 +42,7 @@ def send_can_message_and_get_response(module, relay, state=None):
     # If no state is provided, wait for a response from the Dobiss system and parse the response to get the state of the light
     if state is None:
         # Wait for a response from the Dobiss system
-        response = bus.recv(1.0)  # wait up to 1 second
+        response = bus.recv(0.1)  # wait up to 0.1 second
 
         # Check if the response has the correct arbitration ID
         if response is not None and response.arbitration_id == 0x01FDFF01:
