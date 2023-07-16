@@ -58,7 +58,6 @@ def on_message(client, userdata, msg):
     print(f"Original topic: {msg.topic}")
     # Split the topic into parts
     parts = msg.topic.split('/')
-    print(f"Split parts: {parts}")
     if len(parts) == 5:
         if parts[0] == 'dobiss' and parts[1] == 'light' and parts[3] == 'state' and parts[4] == 'set':
             # The topic is in the correct format
