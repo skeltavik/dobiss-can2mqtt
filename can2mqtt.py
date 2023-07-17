@@ -16,6 +16,10 @@ bus = can.interface.Bus(channel='can0', bustype='socketcan', bitrate=125000)
 client = mqtt.Client()
 client.connect("localhost", 1883)  # Replace with your MQTT broker URL
 
+# Create a lock and an event for the CAN bus
+lock = threading.Lock()
+event_update = threading.Event()
+
 # Function to convert an address to a module and relay
 def address_to_module_and_relay(address):
     module = int(address[:2], 16)
@@ -24,37 +28,46 @@ def address_to_module_and_relay(address):
 
 # Function to send a CAN message and get a response
 def send_can_message_and_get_response(module, relay, state=None):
-    # Construct the CAN data
-    if state is not None:
-        # If a state is provided, send a CAN message to set the state of the light
-        data = [module, relay, state, 0xFF, 0xFF]
-        # Create a CAN message
-        message = can.Message(arbitration_id=0x01FC0002 | (module << 8), data=data, is_extended_id=True)
-    else:
-        # If no state is provided, send a CAN message to get the state of the light
-        data = [module, relay]
-        # Create a CAN message
-        message = can.Message(arbitration_id=0x01FC0001 | (module << 8), data=data, is_extended_id=True)
-
-    # Send the CAN message
-    bus.send(message)
-
-    # If no state is provided, wait for a response from the Dobiss system and parse the response to get the state of the light
-    if state is None:
-        # Wait for a response from the Dobiss system
-        response = bus.recv(0.1)  # wait up to 1 second
-
-        # Check if the response has the correct arbitration ID
-        if response is not None and response.arbitration_id == 0x01FDFF01:
-            # Extract the state from the data
-            state = response.data[0]
-
-            # Publish the state to the MQTT broker
-            address = f"{module:02X}{relay:02X}"
-            client.publish(f"dobiss/light/{address}/state", str(state))
-
+    # Acquire the lock
+    with lock:
+        # Construct the CAN data
+        if state is not None:
+            # If a state is provided, send a CAN message to set the state of the light
+            data = [module, relay, state, 0xFF, 0xFF]
+            # Create a CAN message
+            message = can.Message(arbitration_id=0x01FC0002 | (module << 8), data=data, is_extended_id=True)
         else:
-            print(f"No response received for module {module} and relay {relay}.")
+            # If no state is provided, send a CAN message to get the state of the light
+            data = [module, relay, 0xFF, 0xFF, 0xFF]
+            # Create a CAN message
+            message = can.Message(arbitration_id=0x01FCFF01, data=data, is_extended_id=True)
+
+        # Send the CAN message
+        bus.send(message)
+
+        # If no state is provided, wait for a response from the Dobiss system and parse the response to get the state of the light
+        if state is None:
+            # Set the event to indicate that we're waiting for an update
+            event_update.set()
+
+            # Wait for a response from the Dobiss system
+            response = bus.recv(0.1)  # wait up to 1 second
+
+            # Check if the response has the correct arbitration ID
+            if response is not None and response.arbitration_id == 0x01FDFF01:
+                # Extract the state from the data
+                state = response.data[0]
+
+                # Publish the state to the MQTT broker
+                address = f"{module:02X}{relay:02X}"
+                client.publish(f"dobiss/light/{address}/state", str(state))
+
+            else:
+                print(f"No response received for module {module} and relay {relay}.")
+
+            # Clear the event to indicate that we're no longer waiting for an update
+            event_update.clear()
+
     return state
 
 # Function to control a light
@@ -75,7 +88,6 @@ def control_light(address, state):
         print(f"No light found with address: {address}")
         return None
 
-
 # Function to poll the state of each light
 def poll_light_states():
     print("Polling light states...")  # Debug print
@@ -88,7 +100,7 @@ def poll_light_states():
         print(f"State of light {light['address']}: {state}")  # Debug print
 
     # Schedule the next poll
-    threading.Timer(0.5, poll_light_states).start()
+    threading.Timer(2, poll_light_states).start()
 
 # The on_connect callback function
 def on_connect(client, userdata, flags, rc):
