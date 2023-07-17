@@ -28,12 +28,13 @@ def send_can_message_and_get_response(module, relay, state=None):
     if state is not None:
         # If a state is provided, send a CAN message to set the state of the light
         data = [module, relay, state, 0xFF, 0xFF]
+        # Create a CAN message
+        message = can.Message(arbitration_id=0x01FC0002 | (module << 8), data=data, is_extended_id=True)
     else:
         # If no state is provided, send a CAN message to get the state of the light
-        data = [module, relay, 0xFF, 0xFF, 0xFF]
-
-    # Create a CAN message
-    message = can.Message(arbitration_id=0x01FC0002 | (module << 8), data=data, is_extended_id=True)
+        data = [module, relay]
+        # Create a CAN message
+        message = can.Message(arbitration_id=0x01FC0001 | (module << 8), data=data, is_extended_id=True)
 
     # Send the CAN message
     bus.send(message)
@@ -41,7 +42,7 @@ def send_can_message_and_get_response(module, relay, state=None):
     # If no state is provided, wait for a response from the Dobiss system and parse the response to get the state of the light
     if state is None:
         # Wait for a response from the Dobiss system
-        response = bus.recv(0.1)  # wait up to 0.1 second
+        response = bus.recv(0.1)  # wait up to 1 second
 
         # Check if the response has the correct arbitration ID
         if response is not None and response.arbitration_id == 0x01FDFF01:
@@ -52,6 +53,8 @@ def send_can_message_and_get_response(module, relay, state=None):
             address = f"{module:02X}{relay:02X}"
             client.publish(f"dobiss/light/{address}/state", str(state))
 
+        else:
+            print(f"No response received for module {module} and relay {relay}.")
     return state
 
 # Function to control a light
@@ -72,14 +75,17 @@ def control_light(address, state):
         print(f"No light found with address: {address}")
         return None
 
+
 # Function to poll the state of each light
 def poll_light_states():
+    print("Polling light states...")  # Debug print
     for light in config['lights']:
         # Convert the address to a module and relay
         module, relay = address_to_module_and_relay(light['address'])
 
         # Get the state of the light
-        send_can_message_and_get_response(module, relay)
+        state = send_can_message_and_get_response(module, relay)
+        print(f"State of light {light['address']}: {state}")  # Debug print
 
     # Schedule the next poll
     threading.Timer(0.5, poll_light_states).start()
