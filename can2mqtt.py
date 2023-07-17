@@ -90,14 +90,12 @@ def control_light(address, state):
 
 # Function to poll the state of each light
 def poll_light_states():
-    print("Polling light states...")  # Debug print
     for light in config['lights']:
         # Convert the address to a module and relay
         module, relay = address_to_module_and_relay(light['address'])
 
         # Get the state of the light
-        state = send_can_message_and_get_response(module, relay)
-        print(f"State of light {light['address']}: {state}")  # Debug print
+        send_can_message_and_get_response(module, relay)
 
     # Schedule the next poll
     threading.Timer(2, poll_light_states).start()
