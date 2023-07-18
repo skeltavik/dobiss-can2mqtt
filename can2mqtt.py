@@ -3,6 +3,7 @@ import time
 import yaml
 import paho.mqtt.client as mqtt
 import threading
+import queue
 
 # Load the configuration file
 with open('config.yaml') as f:
@@ -20,6 +21,9 @@ client.connect("localhost", 1883)  # Replace with your MQTT broker URL
 lock = threading.Lock()
 event_update = threading.Event()
 
+# Create a queue for the CAN messages
+can_queue = queue.Queue()
+
 # Function to convert an address to a module and relay
 def address_to_module_and_relay(address):
     module = int(address[:2], 16)
@@ -27,48 +31,50 @@ def address_to_module_and_relay(address):
     return module, relay
 
 # Function to send a CAN message and get a response
-def send_can_message_and_get_response(module, relay, state=None):
-    # Acquire the lock
-    with lock:
-        # Construct the CAN data
-        if state is not None:
-            # If a state is provided, send a CAN message to set the state of the light
-            data = [module, relay, state, 0xFF, 0xFF]
-            # Create a CAN message
-            message = can.Message(arbitration_id=0x01FC0002 | (module << 8), data=data, is_extended_id=True)
-        else:
-            # If no state is provided, send a CAN message to get the state of the light
-            data = [module, relay, 0xFF, 0xFF, 0xFF]
-            # Create a CAN message
-            message = can.Message(arbitration_id=0x01FCFF01, data=data, is_extended_id=True)
-
-        # Send the CAN message
-        bus.send(message)
-
-        # If no state is provided, wait for a response from the Dobiss system and parse the response to get the state of the light
-        if state is None:
-            # Set the event to indicate that we're waiting for an update
-            event_update.set()
-
-            # Wait for a response from the Dobiss system
-            response = bus.recv(0.1)  # wait up to 1 second
-
-            # Check if the response has the correct arbitration ID
-            if response is not None and response.arbitration_id == 0x01FDFF01:
-                # Extract the state from the data
-                state = response.data[0]
-
-                # Publish the state to the MQTT broker
-                address = f"{module:02X}{relay:02X}"
-                client.publish(f"dobiss/light/{address}/state", str(state))
-
+def send_can_message_and_get_response():
+    while True:
+        module, relay, state = can_queue.get()
+        # Acquire the lock
+        with lock:
+            # Construct the CAN data
+            if state is not None:
+                # If a state is provided, send a CAN message to set the state of the light
+                data = [module, relay, state, 0xFF, 0xFF]
+                # Create a CAN message
+                message = can.Message(arbitration_id=0x01FC0002 | (module << 8), data=data, is_extended_id=True)
             else:
-                print(f"No response received for module {module} and relay {relay}.")
+                # If no state is provided, send a CAN message to get the state of the light
+                data = [module, relay, 0xFF, 0xFF, 0xFF]
+                # Create a CAN message
+                message = can.Message(arbitration_id=0x01FCFF01, data=data, is_extended_id=True)
 
-            # Clear the event to indicate that we're no longer waiting for an update
-            event_update.clear()
+            # Send the CAN message
+            bus.send(message)
 
-    return state
+            # If no state is provided, wait for a response from the Dobiss system and parse the response to get the state of the light
+            if state is None:
+                # Set the event to indicate that we're waiting for an update
+                event_update.set()
+
+                # Wait for a response from the Dobiss system
+                response = bus.recv(0.1)  # wait up to 1 second
+
+                # Check if the response has the correct arbitration ID
+                if response is not None and response.arbitration_id == 0x01FDFF01:
+                    # Extract the state from the data
+                    state = response.data[0]
+
+                    # Publish the state to the MQTT broker
+                    address = f"{module:02X}{relay:02X}"
+                    client.publish(f"dobiss/light/{address}/state", str(state))
+
+                else:
+                    print(f"No response received for module {module} and relay {relay}.")
+
+                # Clear the event to indicate that we're no longer waiting for an update
+                event_update.clear()
+
+        can_queue.task_done()
 
 # Function to control a light
 def control_light(address, state):
@@ -80,9 +86,9 @@ def control_light(address, state):
             # Convert the address to a module and relay
             module, relay = address_to_module_and_relay(light['address'])
 
-            # Send the CAN message
+            # Add the CAN message to the queue
             print(f"Controlling light: {light['name']} (address: {address}, state: {state})")
-            send_can_message_and_get_response(module, relay, state)
+            can_queue.put((module, relay, state))
             return light['name']
     else:
         print(f"No light found with address: {address}")
@@ -94,8 +100,8 @@ def poll_light_states():
         # Convert the address to a module and relay
         module, relay = address_to_module_and_relay(light['address'])
 
-        # Get the state of the light
-        send_can_message_and_get_response(module, relay)
+        # Add the CAN message to the queue
+        can_queue.put((module, relay, None))
 
     # Schedule the next poll
     threading.Timer(2, poll_light_states).start()
@@ -140,6 +146,9 @@ client.on_connect = on_connect
 client.on_message = on_message
 
 client.loop_start()
+
+# Start the thread to send CAN messages and get responses
+threading.Thread(target=send_can_message_and_get_response, daemon=True).start()
 
 # Start polling
 poll_light_states()
