@@ -51,6 +51,8 @@ def send_can_message_and_get_response():
             # Send the CAN message
             bus.send(message)
 
+            time.sleep(0.1)
+
             # If no state is provided, wait for a response from the Dobiss system and parse the response to get the state of the light
             if state is None:
                 # Set the event to indicate that we're waiting for an update
@@ -103,8 +105,11 @@ def poll_light_states():
         # Add the CAN message to the queue
         can_queue.put((module, relay, None))
 
+    # Wait until all items in the queue have been processed
+    can_queue.join()
+
     # Schedule the next poll
-    threading.Timer(2, poll_light_states).start()
+    threading.Thread(target=poll_light_states).start()
 
 # The on_connect callback function
 def on_connect(client, userdata, flags, rc):
