@@ -11,7 +11,16 @@ with open('config.yaml') as f:
 print(f"Loaded configuration: {config}")
 
 # Create a CAN bus interface
-bus = can.interface.Bus(channel='can0', bustype='socketcan', bitrate=125000)
+bus = can.interface.Bus(
+    channel='can0', 
+    bustype='socketcan', 
+    bitrate=125000, 
+    receive_own_messages=True, 
+    can_filters=[
+        {"can_id": 0x0002FF01, "can_mask": 0x1FFFFFFF, "extended": True},  # Reply to SET
+        {"can_id": 0x01FDFF01, "can_mask": 0x1FFFFFFF, "extended": True},  # Reply to GET
+    ]
+)
 
 # Create an MQTT client and connect to the MQTT broker
 client = mqtt.Client()
