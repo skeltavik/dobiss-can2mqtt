@@ -4,6 +4,7 @@ import yaml
 import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+import time
 
 # Enable logging
 logging.basicConfig(level=logging.DEBUG)
@@ -82,6 +83,18 @@ httpd = HTTPServer(('0.0.0.0', 8000), RequestHandler)
 
 # Start HTTP server in a separate thread
 threading.Thread(target=httpd.serve_forever).start()
+
+# Poll the states of all lights
+for light in config:
+    address = int(light["address"], 16)
+    module = address >> 8
+    relay = address & 0xFF
+    arbitration_id = 0x01FD0002 | (module << 8)
+    data = [module, relay, 0x02, 0xFF, 0xFF]
+    message = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=True)
+    bus.send(message)
+    logger.debug("Sent CAN message: %s", message)
+    time.sleep(0.1)  # Add a delay between each GET command
 
 # CAN bus loop
 while True:
