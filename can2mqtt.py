@@ -48,13 +48,15 @@ def on_message(client, userdata, msg):
             address = int(light["address"], 16)
             module = address >> 8
             relay = address & 0xFF
-            state = 1 if msg.payload in [b"ON", b"1"] else 0
-            arbitration_id = 0x01FC0002 | (module << 8)
-            data = [module, relay, state, 0xFF, 0xFF]
-            message = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=True)
-            bus.send(message)
-            logger.debug("Sent CAN message: %s", message)
+            state = 1 if msg.payload in [b"ON", b"1"] else 0 if msg.payload in [b"OFF", b"0"] else None
+            if state is not None:  # Only send a message if the state is valid
+                arbitration_id = 0x01FC0002 | (module << 8)
+                data = [module, relay, state, 0xFF, 0xFF]
+                message = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=True)
+                bus.send(message)
+                logger.debug("Sent CAN message: %s", message)
             break
+
 
 client.on_connect = on_connect
 client.on_message = on_message
