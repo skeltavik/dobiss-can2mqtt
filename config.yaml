@@ -1,37 +1,36 @@
-lights:
-  - name: Entrance Outdoor Light
-    address: '0100'
-  - name: Terrace Light
-    address: '0101'
-  - name: Laundry Light
-    address: '0102'
-  - name: Living Room Main Light
-    address: '0104'
-  - name: Entrance Light
-    address: '0105'
-  - name: Bathroom Mirror Light
-    address: '0106'
-  - name: Kitchen Spots
-    address: '0107'
-  - name: Dinner Table Light
-    address: '0108'
-  - name: Shower Room Mirror Light
-    address: '0109'
-  - name: Toilet Light
-    address: '010A'
-  - name: Living Room Door Light
-    address: '010B'
-  - name: Hallway Light
-    address: '0200'
-  - name: Shower Room Main Light
-    address: '0201'
-  - name: Calvin's Room Light
-    address: '0202'
-  - name: Bathroom Main Light
-    address: '0203'
-  - name: Office Light
-    address: '0204'
-  - name: Bedroom Light
-    address: '0205'
-  - name: Attic Light
-    address: '0206'
+- name: Entrance Outdoor Light
+  address: '0100'
+- name: Terrace Light
+  address: '0101'
+- name: Laundry Light
+  address: '0102'
+- name: Living Room Main Light
+  address: '0104'
+- name: Entrance Light
+  address: '0105'
+- name: Bathroom Mirror Light
+  address: '0106'
+- name: Kitchen Spots
+  address: '0107'
+- name: Dinner Table Light
+  address: '0108'
+- name: Shower Room Mirror Light
+  address: '0109'
+- name: Toilet Light
+  address: '010A'
+- name: Living Room Door Light
+  address: '010B'
+- name: Hallway Light
+  address: '0200'
+- name: Shower Room Main Light
+  address: '0201'
+- name: Calvin's Room Light
+  address: '0202'
+- name: Bathroom Main Light
+  address: '0203'
+- name: Office Light
+  address: '0204'
+- name: Bedroom Light
+  address: '0205'
+- name: Attic Light
+  address: '0206'
