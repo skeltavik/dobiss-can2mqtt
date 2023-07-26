@@ -3,6 +3,8 @@ import can
 import paho.mqtt.client as mqtt
 import yaml
 import logging
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
 # Enable logging
 logging.basicConfig(level=logging.DEBUG)
@@ -57,7 +59,6 @@ def on_message(client, userdata, msg):
                 logger.debug("Sent CAN message: %s", message)
             break
 
-
 client.on_connect = on_connect
 client.on_message = on_message
 
@@ -65,6 +66,23 @@ client.connect(MQTT_BROKER, MQTT_PORT, 60)
 
 # Start MQTT loop
 client.loop_start()
+
+# HTTP server setup
+class RequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/config.yaml":
+            self.send_response(200)
+            self.send_header('Content-type', 'text/yaml')
+            self.end_headers()
+            with open("config.yaml", "r") as file:
+                self.wfile.write(file.read().encode())
+        else:
+            self.send_response(404)
+
+httpd = HTTPServer(('localhost', 8000), RequestHandler)
+
+# Start HTTP server in a separate thread
+threading.Thread(target=httpd.serve_forever).start()
 
 # CAN bus loop
 while True:
