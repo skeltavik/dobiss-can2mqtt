@@ -78,7 +78,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
 
-httpd = HTTPServer(('localhost', 8000), RequestHandler)
+httpd = HTTPServer(('0.0.0.0', 8000), RequestHandler)
 
 # Start HTTP server in a separate thread
 threading.Thread(target=httpd.serve_forever).start()
