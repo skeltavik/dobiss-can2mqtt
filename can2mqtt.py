@@ -1,4 +1,3 @@
-import asyncio
 import can
 import paho.mqtt.client as mqtt
 import yaml
