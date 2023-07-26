@@ -74,11 +74,11 @@ while True:
         relay = address & 0xFF
         if message.arbitration_id == 0x0002FF01 and message.data[0] == module and message.data[1] == relay:
             # Publish an MQTT message with the light's state
-            client.publish(f"dobiss/light/{light['address']}/state", "ON" if message.data[2] == 1 else "OFF")
+            client.publish(f"dobiss/light/{light['address']}/state", "ON" if message.data[2] == 1 else "OFF", retain=True)
             logger.debug("Published MQTT message: %s", message)
         elif message.arbitration_id == 0x01FDFF01:
             # Update the light's state based on the reply to the GET command
-            client.publish(f"dobiss/light/{light['address']}/state", "ON" if message.data[0] == 1 else "OFF")
+            client.publish(f"dobiss/light/{light['address']}/state", "ON" if message.data[0] == 1 else "OFF", retain=True)
             logger.debug("Updated light state based on GET reply: %s", message)
 
 # Stop MQTT loop
