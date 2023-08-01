@@ -1,3 +1,8 @@
+<div style="display: flex; align-items: center;">
+  <img src="https://dobiss.com/wp-content/themes/Comith-Wordpress-Theme/assets/logo_dobiss.svg" alt="Dobiss Logo" height="96">&nbsp; &nbsp; &nbsp;
+  <img src="https://mqtt.org/assets/img/mqtt-logo-ver.jpg" alt="MQTT Logo" height="96">
+</div>
+
 # dobiss-can2mqtt
 
 This repository contains the code for the Dobiss CAN to MQTT Converter. This application allows you to control your Dobiss lights using MQTT messages. It is a prerequisite for the Dobiss MQTT Converter for Homey and needs to be running first.
