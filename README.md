@@ -40,3 +40,7 @@ This project is licensed under the terms of the license found in the `LICENSE` f
 ## Contact
 
 If you have any questions or issues, please open an issue on this repository.
+
+## Credits
+
+Many thanks to [Dries](https://github.com/dries007) for his splendid reverse engineering of the Dobiss protocol and documenting this!
