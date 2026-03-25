@@ -24,7 +24,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from can2mqtt import handle_can_message, handle_mqtt_message
+from can2mqtt import build_lookup_tables, handle_can_message, handle_mqtt_message
 from tests.dobiss_simulator import (
     ARBIT_GET_REPLY,
     ARBIT_GET_REQUEST,
@@ -41,6 +41,7 @@ CONFIG = [
     {"name": "Kitchen Spots",           "address": "0107"},  # module=1, relay=7
     {"name": "Hallway Light",           "address": "0200"},  # module=2, relay=0
 ]
+CONFIG_CAN_TO_MQTT, CONFIG_MQTT_TO_CAN = build_lookup_tables(CONFIG)
 
 
 # ---------------------------------------------------------------------------
@@ -105,33 +106,33 @@ def recv_one(bus: can.Bus, timeout: float = 1.0) -> can.Message | None:
 class TestSetRoundTrip:
     def test_mqtt_on_reaches_simulator(self, sim_and_bus):
         sim, app_bus = sim_and_bus
-        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", CONFIG_MQTT_TO_CAN, app_bus)
         time.sleep(0.15)
         assert sim.get_state(1, 0) == 1
 
     def test_mqtt_off_reaches_simulator(self, sim_and_bus):
         sim, app_bus = sim_and_bus
         sim.set_state(1, 0, 1)  # pre-set to ON
-        handle_mqtt_message("dobiss/light/0100/state/set", b"OFF", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"OFF", CONFIG_MQTT_TO_CAN, app_bus)
         time.sleep(0.15)
         assert sim.get_state(1, 0) == 0
 
     def test_mqtt_numeric_1_reaches_simulator(self, sim_and_bus):
         sim, app_bus = sim_and_bus
-        handle_mqtt_message("dobiss/light/0107/state/set", b"1", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0107/state/set", b"1", CONFIG_MQTT_TO_CAN, app_bus)
         time.sleep(0.15)
         assert sim.get_state(1, 7) == 1
 
     def test_mqtt_numeric_0_reaches_simulator(self, sim_and_bus):
         sim, app_bus = sim_and_bus
         sim.set_state(1, 7, 1)
-        handle_mqtt_message("dobiss/light/0107/state/set", b"0", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0107/state/set", b"0", CONFIG_MQTT_TO_CAN, app_bus)
         time.sleep(0.15)
         assert sim.get_state(1, 7) == 0
 
     def test_second_module_relayed_correctly(self, sim_and_bus):
         sim, app_bus = sim_and_bus
-        handle_mqtt_message("dobiss/light/0200/state/set", b"ON", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0200/state/set", b"ON", CONFIG_MQTT_TO_CAN, app_bus)
         time.sleep(0.15)
         assert sim.get_state(2, 0) == 1
 
@@ -140,14 +141,14 @@ class TestSetRoundTrip:
         sim, app_bus = sim_and_bus
         mqtt_client = MagicMock()
 
-        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", CONFIG_MQTT_TO_CAN, app_bus)
 
         # Receive the SET reply the simulator sends back
         reply = recv_one(app_bus, timeout=1.0)
         assert reply is not None, "No CAN reply received from simulator"
         assert reply.arbitration_id == ARBIT_SET_REPLY
 
-        handle_can_message(reply, CONFIG, mqtt_client)
+        handle_can_message(reply, CONFIG_CAN_TO_MQTT, mqtt_client)
         mqtt_client.publish.assert_called_once_with(
             "dobiss/light/0100/state", "ON", retain=True
         )
@@ -156,10 +157,10 @@ class TestSetRoundTrip:
         sim, app_bus = sim_and_bus
         mqtt_client = MagicMock()
 
-        handle_mqtt_message("dobiss/light/0100/state/set", b"OFF", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"OFF", CONFIG_MQTT_TO_CAN, app_bus)
         reply = recv_one(app_bus, timeout=1.0)
         assert reply is not None
-        handle_can_message(reply, CONFIG, mqtt_client)
+        handle_can_message(reply, CONFIG_CAN_TO_MQTT, mqtt_client)
 
         mqtt_client.publish.assert_called_once_with(
             "dobiss/light/0100/state", "OFF", retain=True
@@ -167,14 +168,14 @@ class TestSetRoundTrip:
 
     def test_invalid_mqtt_payload_no_can_message(self, sim_and_bus):
         sim, app_bus = sim_and_bus
-        handle_mqtt_message("dobiss/light/0100/state/set", b"GARBAGE", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"GARBAGE", CONFIG_MQTT_TO_CAN, app_bus)
         time.sleep(0.15)
         # Simulator should not have received any message
         assert len(sim.received_messages) == 0
 
     def test_unknown_light_no_can_message(self, sim_and_bus):
         sim, app_bus = sim_and_bus
-        handle_mqtt_message("dobiss/light/9999/state/set", b"ON", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/9999/state/set", b"ON", CONFIG_MQTT_TO_CAN, app_bus)
         time.sleep(0.15)
         assert len(sim.received_messages) == 0
 
@@ -227,7 +228,7 @@ class TestGetRoundTrip:
 
         reply = recv_one(app_bus, timeout=1.0)
         assert reply is not None
-        handle_can_message(reply, CONFIG, mqtt_client)  # no pending_gets
+        handle_can_message(reply, CONFIG_CAN_TO_MQTT, mqtt_client)  # no pending_gets
 
         mqtt_client.publish.assert_not_called()
 
@@ -236,7 +237,7 @@ class TestGetRoundTrip:
         sim, app_bus = sim_and_bus
 
         # Write state via MQTT/SET
-        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", CONFIG_MQTT_TO_CAN, app_bus)
         time.sleep(0.15)
         recv_one(app_bus, timeout=0.5)  # drain the SET reply
 
@@ -266,11 +267,11 @@ class TestGetRoundTripFixed:
             is_extended_id=True,
         ))
 
-    def _process_n(self, app_bus, config, client, pending_gets, n, timeout=1.0):
+    def _process_n(self, app_bus, can_to_mqtt, client, pending_gets, n, timeout=1.0):
         for _ in range(n):
             msg = recv_one(app_bus, timeout=timeout)
             if msg:
-                handle_can_message(msg, config, client, pending_gets)
+                handle_can_message(msg, can_to_mqtt, client, pending_gets)
 
     def test_only_queried_light_is_updated(self, sim_bus_and_panel):
         sim, app_bus, panel_bus = sim_bus_and_panel
@@ -281,7 +282,7 @@ class TestGetRoundTripFixed:
         self._panel_get(panel_bus, module=1, relay=0)
 
         # app_bus sees: (1) GET request from panel, (2) GET reply from simulator
-        self._process_n(app_bus, CONFIG, mqtt_client, pending_gets, n=2)
+        self._process_n(app_bus, CONFIG_CAN_TO_MQTT, mqtt_client, pending_gets, n=2)
 
         mqtt_client.publish.assert_called_once_with(
             "dobiss/light/0100/state", "ON", retain=True
@@ -294,7 +295,7 @@ class TestGetRoundTripFixed:
 
         sim.set_state(1, 7, 0)  # 0107 Kitchen Spots = OFF
         self._panel_get(panel_bus, module=1, relay=7)
-        self._process_n(app_bus, CONFIG, mqtt_client, pending_gets, n=2)
+        self._process_n(app_bus, CONFIG_CAN_TO_MQTT, mqtt_client, pending_gets, n=2)
 
         mqtt_client.publish.assert_called_once_with(
             "dobiss/light/0107/state", "OFF", retain=True
@@ -312,7 +313,7 @@ class TestGetRoundTripFixed:
         self._panel_get(panel_bus, module=1, relay=7)
 
         # 2 GET requests + 2 GET replies = 4 messages
-        self._process_n(app_bus, CONFIG, mqtt_client, pending_gets, n=4)
+        self._process_n(app_bus, CONFIG_CAN_TO_MQTT, mqtt_client, pending_gets, n=4)
 
         calls = mqtt_client.publish.call_args_list
         assert len(calls) == 2
@@ -324,7 +325,7 @@ class TestGetRoundTripFixed:
         pending_gets = deque()
 
         self._panel_get(panel_bus, module=1, relay=0)
-        self._process_n(app_bus, CONFIG, MagicMock(), pending_gets, n=2)
+        self._process_n(app_bus, CONFIG_CAN_TO_MQTT, MagicMock(), pending_gets, n=2)
 
         assert len(pending_gets) == 0
 
@@ -362,14 +363,14 @@ class TestSimulator:
 
     def test_simulator_logs_received_messages(self, sim_and_bus):
         sim, app_bus = sim_and_bus
-        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", CONFIG_MQTT_TO_CAN, app_bus)
         time.sleep(0.15)
         assert len(sim.received_messages) == 1
         assert sim.received_messages[0].data[2] == 1
 
     def test_simulator_logs_sent_messages(self, sim_and_bus):
         sim, app_bus = sim_and_bus
-        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", CONFIG_MQTT_TO_CAN, app_bus)
         time.sleep(0.15)
         recv_one(app_bus, timeout=0.5)  # drain
         assert len(sim.sent_messages) == 1
@@ -377,9 +378,9 @@ class TestSimulator:
 
     def test_independent_relay_states(self, sim_and_bus):
         sim, app_bus = sim_and_bus
-        handle_mqtt_message("dobiss/light/0100/state/set", b"ON",  CONFIG, app_bus)
-        handle_mqtt_message("dobiss/light/0107/state/set", b"OFF", CONFIG, app_bus)
-        handle_mqtt_message("dobiss/light/0200/state/set", b"ON",  CONFIG, app_bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"ON",  CONFIG_MQTT_TO_CAN, app_bus)
+        handle_mqtt_message("dobiss/light/0107/state/set", b"OFF", CONFIG_MQTT_TO_CAN, app_bus)
+        handle_mqtt_message("dobiss/light/0200/state/set", b"ON",  CONFIG_MQTT_TO_CAN, app_bus)
         time.sleep(0.2)
 
         assert sim.get_state(1, 0) == 1

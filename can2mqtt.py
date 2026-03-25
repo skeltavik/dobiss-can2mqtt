@@ -6,8 +6,6 @@ import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-# Enable logging
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # MQTT settings
@@ -39,6 +37,23 @@ def parse_address(address_str):
     return address >> 8, address & 0xFF
 
 
+def build_lookup_tables(config):
+    """Pre-compute CAN↔MQTT lookup dicts from the config list.
+
+    Returns:
+        can_to_mqtt:  {(module, relay): state_topic_str}
+        mqtt_to_can:  {set_topic_str:   (module, relay)}
+    """
+    can_to_mqtt = {}
+    mqtt_to_can = {}
+    for light in config:
+        addr = light["address"]
+        key = parse_address(addr)
+        can_to_mqtt[key] = f"dobiss/light/{addr}/state"
+        mqtt_to_can[f"dobiss/light/{addr}/state/set"] = key
+    return can_to_mqtt, mqtt_to_can
+
+
 def parse_state(payload):
     """Parse an MQTT payload into a CAN state value.
 
@@ -58,25 +73,29 @@ def build_set_message(module, relay, state):
     return can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=True)
 
 
-def handle_mqtt_message(topic, payload, config, bus):
+def handle_mqtt_message(topic, payload, mqtt_to_can, bus):
     """Process an incoming MQTT message and send the corresponding CAN command.
+
+    mqtt_to_can is a {set_topic: (module, relay)} dict built by build_lookup_tables().
 
     Returns True if a matching light was found, False otherwise.
     """
-    for light in config:
-        if topic == f"dobiss/light/{light['address']}/state/set":
-            module, relay = parse_address(light["address"])
-            state = parse_state(payload)
-            if state is not None:
-                message = build_set_message(module, relay, state)
-                bus.send(message)
-                logger.debug("Sent CAN message: %s", message)
-            return True
-    return False
+    key = mqtt_to_can.get(topic)
+    if key is None:
+        return False
+    module, relay = key
+    state = parse_state(payload)
+    if state is not None:
+        message = build_set_message(module, relay, state)
+        bus.send(message)
+        logger.debug("Sent CAN message: %s", message)
+    return True
 
 
-def handle_can_message(message, config, client, pending_gets=None):
+def handle_can_message(message, can_to_mqtt, client, pending_gets=None):
     """Process an incoming CAN message and publish the corresponding MQTT state.
+
+    can_to_mqtt is a {(module, relay): state_topic} dict built by build_lookup_tables().
 
     pending_gets is a collections.deque used to pair GET requests with their
     replies. Pass the same instance on every call within a bus session; the
@@ -97,23 +116,20 @@ def handle_can_message(message, config, client, pending_gets=None):
         return
 
     if arb == ARBIT_SET_REPLY:
-        for light in config:
-            module, relay = parse_address(light["address"])
-            if message.data[0] == module and message.data[1] == relay:
-                state_str = "ON" if message.data[2] == 1 else "OFF"
-                client.publish(f"dobiss/light/{light['address']}/state", state_str, retain=True)
-                logger.debug("Published MQTT message: %s", message)
-                return
+        topic = can_to_mqtt.get((message.data[0], message.data[1]))
+        if topic is not None:
+            state_str = "ON" if message.data[2] == 1 else "OFF"
+            client.publish(topic, state_str, retain=True)
+            logger.debug("Published MQTT message: %s", message)
+        return
 
     if arb == ARBIT_GET_REPLY and pending_gets:
         req_module, req_relay = pending_gets.popleft()
-        for light in config:
-            module, relay = parse_address(light["address"])
-            if module == req_module and relay == req_relay:
-                state_str = "ON" if message.data[0] == 1 else "OFF"
-                client.publish(f"dobiss/light/{light['address']}/state", state_str, retain=True)
-                logger.debug("Updated light state based on GET reply: %s", message)
-                return
+        topic = can_to_mqtt.get((req_module, req_relay))
+        if topic is not None:
+            state_str = "ON" if message.data[0] == 1 else "OFF"
+            client.publish(topic, state_str, retain=True)
+            logger.debug("Updated light state based on GET reply: %s", message)
 
 
 def make_on_connect(config):
@@ -125,11 +141,11 @@ def make_on_connect(config):
     return on_connect
 
 
-def make_on_message(config, bus):
+def make_on_message(mqtt_to_can, bus):
     """Return an on_message callback that forwards MQTT messages to the CAN bus."""
     def on_message(client, userdata, msg):
         logger.debug("%s %s", msg.topic, msg.payload)
-        handle_mqtt_message(msg.topic, msg.payload, config, bus)
+        handle_mqtt_message(msg.topic, msg.payload, mqtt_to_can, bus)
     return on_message
 
 
@@ -154,7 +170,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
     config = load_config("config.yaml")
+    can_to_mqtt, mqtt_to_can = build_lookup_tables(config)
 
     # CAN bus setup
     bus = can.Bus(bustype=CAN_INTERFACE, channel=CAN_CHANNEL, bitrate=125000, receive_own_messages=True)
@@ -167,7 +186,7 @@ if __name__ == "__main__":
     # MQTT client setup
     client = mqtt.Client()
     client.on_connect = make_on_connect(config)
-    client.on_message = make_on_message(config, bus)
+    client.on_message = make_on_message(mqtt_to_can, bus)
     client.connect(MQTT_BROKER, MQTT_PORT, 60)
     client.loop_start()
 
@@ -179,6 +198,6 @@ if __name__ == "__main__":
     pending_gets = deque()
     while True:
         message = bus.recv()
-        handle_can_message(message, config, client, pending_gets)
+        handle_can_message(message, can_to_mqtt, client, pending_gets)
 
     client.loop_stop()

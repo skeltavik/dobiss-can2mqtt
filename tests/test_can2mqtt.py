@@ -20,6 +20,7 @@ from can2mqtt import (
     ARBIT_GET_REQUEST,
     ARBIT_SET_REPLY,
     RequestHandler,
+    build_lookup_tables,
     build_set_message,
     handle_can_message,
     handle_mqtt_message,
@@ -40,6 +41,7 @@ SAMPLE_CONFIG = [
     {"name": "Kitchen Spots", "address": "0107"},
     {"name": "Hallway Light", "address": "0200"},
 ]
+SAMPLE_CAN_TO_MQTT, SAMPLE_MQTT_TO_CAN = build_lookup_tables(SAMPLE_CONFIG)
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +147,50 @@ class TestBuildSetMessage:
 
 
 # ---------------------------------------------------------------------------
+# build_lookup_tables
+# ---------------------------------------------------------------------------
+
+class TestBuildLookupTables:
+    def test_can_to_mqtt_keys_are_module_relay_tuples(self):
+        can_to_mqtt, _ = build_lookup_tables(SAMPLE_CONFIG)
+        assert (1, 0) in can_to_mqtt
+        assert (1, 7) in can_to_mqtt
+        assert (2, 0) in can_to_mqtt
+
+    def test_can_to_mqtt_values_are_state_topics(self):
+        can_to_mqtt, _ = build_lookup_tables(SAMPLE_CONFIG)
+        assert can_to_mqtt[(1, 0)] == "dobiss/light/0100/state"
+        assert can_to_mqtt[(1, 7)] == "dobiss/light/0107/state"
+
+    def test_mqtt_to_can_keys_are_set_topics(self):
+        _, mqtt_to_can = build_lookup_tables(SAMPLE_CONFIG)
+        assert "dobiss/light/0100/state/set" in mqtt_to_can
+        assert "dobiss/light/0107/state/set" in mqtt_to_can
+
+    def test_mqtt_to_can_values_are_module_relay_tuples(self):
+        _, mqtt_to_can = build_lookup_tables(SAMPLE_CONFIG)
+        assert mqtt_to_can["dobiss/light/0100/state/set"] == (1, 0)
+        assert mqtt_to_can["dobiss/light/0107/state/set"] == (1, 7)
+
+    def test_empty_config_returns_empty_dicts(self):
+        can_to_mqtt, mqtt_to_can = build_lookup_tables([])
+        assert can_to_mqtt == {}
+        assert mqtt_to_can == {}
+
+    def test_table_length_matches_config(self):
+        can_to_mqtt, mqtt_to_can = build_lookup_tables(SAMPLE_CONFIG)
+        assert len(can_to_mqtt) == len(SAMPLE_CONFIG)
+        assert len(mqtt_to_can) == len(SAMPLE_CONFIG)
+
+    def test_roundtrip_consistency(self):
+        """Every (module, relay) in can_to_mqtt must be reachable via mqtt_to_can."""
+        can_to_mqtt, mqtt_to_can = build_lookup_tables(SAMPLE_CONFIG)
+        for set_topic, key in mqtt_to_can.items():
+            state_topic = set_topic.replace("/state/set", "/state")
+            assert can_to_mqtt[key] == state_topic
+
+
+# ---------------------------------------------------------------------------
 # handle_mqtt_message
 # ---------------------------------------------------------------------------
 
@@ -153,64 +199,64 @@ class TestHandleMqttMessage:
         self.bus = MagicMock()
 
     def test_sends_can_message_for_on(self):
-        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", SAMPLE_CONFIG, self.bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", SAMPLE_MQTT_TO_CAN, self.bus)
         self.bus.send.assert_called_once()
         msg = self.bus.send.call_args[0][0]
         assert msg.data[2] == 1
 
     def test_sends_can_message_for_off(self):
-        handle_mqtt_message("dobiss/light/0100/state/set", b"OFF", SAMPLE_CONFIG, self.bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"OFF", SAMPLE_MQTT_TO_CAN, self.bus)
         self.bus.send.assert_called_once()
         msg = self.bus.send.call_args[0][0]
         assert msg.data[2] == 0
 
     def test_no_send_for_invalid_state(self):
-        handle_mqtt_message("dobiss/light/0100/state/set", b"INVALID", SAMPLE_CONFIG, self.bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"INVALID", SAMPLE_MQTT_TO_CAN, self.bus)
         self.bus.send.assert_not_called()
 
     def test_no_send_for_unknown_topic(self):
-        handle_mqtt_message("dobiss/light/9999/state/set", b"ON", SAMPLE_CONFIG, self.bus)
+        handle_mqtt_message("dobiss/light/9999/state/set", b"ON", SAMPLE_MQTT_TO_CAN, self.bus)
         self.bus.send.assert_not_called()
 
     def test_correct_module_and_relay_in_data(self):
         # address "0107" → module=1, relay=7
-        handle_mqtt_message("dobiss/light/0107/state/set", b"ON", SAMPLE_CONFIG, self.bus)
+        handle_mqtt_message("dobiss/light/0107/state/set", b"ON", SAMPLE_MQTT_TO_CAN, self.bus)
         msg = self.bus.send.call_args[0][0]
         assert msg.data[0] == 1  # module
         assert msg.data[1] == 7  # relay
 
     def test_correct_module_and_relay_second_module(self):
         # address "0200" → module=2, relay=0
-        handle_mqtt_message("dobiss/light/0200/state/set", b"ON", SAMPLE_CONFIG, self.bus)
+        handle_mqtt_message("dobiss/light/0200/state/set", b"ON", SAMPLE_MQTT_TO_CAN, self.bus)
         msg = self.bus.send.call_args[0][0]
         assert msg.data[0] == 2
         assert msg.data[1] == 0
 
     def test_returns_true_for_matching_topic(self):
-        result = handle_mqtt_message("dobiss/light/0100/state/set", b"ON", SAMPLE_CONFIG, self.bus)
+        result = handle_mqtt_message("dobiss/light/0100/state/set", b"ON", SAMPLE_MQTT_TO_CAN, self.bus)
         assert result is True
 
     def test_returns_true_even_when_state_invalid(self):
         # Light was found (topic matched) even if state is not sent
-        result = handle_mqtt_message("dobiss/light/0100/state/set", b"BAD", SAMPLE_CONFIG, self.bus)
+        result = handle_mqtt_message("dobiss/light/0100/state/set", b"BAD", SAMPLE_MQTT_TO_CAN, self.bus)
         assert result is True
 
     def test_returns_false_for_no_match(self):
-        result = handle_mqtt_message("dobiss/light/9999/state/set", b"ON", SAMPLE_CONFIG, self.bus)
+        result = handle_mqtt_message("dobiss/light/9999/state/set", b"ON", SAMPLE_MQTT_TO_CAN, self.bus)
         assert result is False
 
     def test_only_sends_once_even_with_multiple_lights(self):
         # Only the first matching light should trigger a send
-        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", SAMPLE_CONFIG, self.bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"ON", SAMPLE_MQTT_TO_CAN, self.bus)
         assert self.bus.send.call_count == 1
 
     def test_numeric_on_payload(self):
-        handle_mqtt_message("dobiss/light/0100/state/set", b"1", SAMPLE_CONFIG, self.bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"1", SAMPLE_MQTT_TO_CAN, self.bus)
         self.bus.send.assert_called_once()
         assert self.bus.send.call_args[0][0].data[2] == 1
 
     def test_numeric_off_payload(self):
-        handle_mqtt_message("dobiss/light/0100/state/set", b"0", SAMPLE_CONFIG, self.bus)
+        handle_mqtt_message("dobiss/light/0100/state/set", b"0", SAMPLE_MQTT_TO_CAN, self.bus)
         self.bus.send.assert_called_once()
         assert self.bus.send.call_args[0][0].data[2] == 0
 
@@ -234,14 +280,14 @@ class TestHandleCanMessageSetReply:
 
     def test_publishes_on(self):
         msg = _mock_can_message(0x0002FF01, [1, 0, 1, 0, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client)
         self.client.publish.assert_called_once_with(
             "dobiss/light/0100/state", "ON", retain=True
         )
 
     def test_publishes_off(self):
         msg = _mock_can_message(0x0002FF01, [1, 0, 0, 0, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client)
         self.client.publish.assert_called_once_with(
             "dobiss/light/0100/state", "OFF", retain=True
         )
@@ -249,7 +295,7 @@ class TestHandleCanMessageSetReply:
     def test_matches_correct_light_by_module_and_relay(self):
         # module=1, relay=7 → address "0107" = Kitchen Spots
         msg = _mock_can_message(0x0002FF01, [1, 7, 1, 0, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client)
         self.client.publish.assert_called_once_with(
             "dobiss/light/0107/state", "ON", retain=True
         )
@@ -257,13 +303,13 @@ class TestHandleCanMessageSetReply:
     def test_no_publish_for_unmatched_module_relay(self):
         # module=9, relay=9 not in config
         msg = _mock_can_message(0x0002FF01, [9, 9, 1, 0, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client)
         self.client.publish.assert_not_called()
 
     def test_data_byte2_nonzero_but_not_1_is_off(self):
         # Only data[2] == 1 means ON; anything else is OFF
         msg = _mock_can_message(0x0002FF01, [1, 0, 2, 0, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client)
         self.client.publish.assert_called_once_with(
             "dobiss/light/0100/state", "OFF", retain=True
         )
@@ -280,23 +326,23 @@ class TestHandleCanMessageGetRequest:
     def test_adds_module_relay_to_pending_gets(self):
         pending = deque()
         msg = _mock_can_message(ARBIT_GET_REQUEST, [1, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, MagicMock(), pending_gets=pending)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, MagicMock(), pending_gets=pending)
         assert list(pending) == [(1, 0)]
 
     def test_does_not_publish(self):
         client = MagicMock()
         msg = _mock_can_message(ARBIT_GET_REQUEST, [1, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, client, pending_gets=deque())
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, client, pending_gets=deque())
         client.publish.assert_not_called()
 
     def test_no_pending_gets_param_does_not_crash(self):
         msg = _mock_can_message(ARBIT_GET_REQUEST, [1, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, MagicMock())  # pending_gets omitted
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, MagicMock())  # pending_gets omitted
 
     def test_fifo_ordering_preserved(self):
         pending = deque()
-        handle_can_message(_mock_can_message(ARBIT_GET_REQUEST, [1, 0]), SAMPLE_CONFIG, MagicMock(), pending)
-        handle_can_message(_mock_can_message(ARBIT_GET_REQUEST, [1, 7]), SAMPLE_CONFIG, MagicMock(), pending)
+        handle_can_message(_mock_can_message(ARBIT_GET_REQUEST, [1, 0]), SAMPLE_CAN_TO_MQTT, MagicMock(), pending)
+        handle_can_message(_mock_can_message(ARBIT_GET_REQUEST, [1, 7]), SAMPLE_CAN_TO_MQTT, MagicMock(), pending)
         assert list(pending) == [(1, 0), (1, 7)]
 
     def test_full_get_cycle_publishes_correct_light(self):
@@ -304,9 +350,9 @@ class TestHandleCanMessageGetRequest:
         pending = deque()
         client = MagicMock()
         # Step 1: snoop the GET request for Kitchen Spots (module=1, relay=7)
-        handle_can_message(_mock_can_message(ARBIT_GET_REQUEST, [1, 7]), SAMPLE_CONFIG, client, pending)
+        handle_can_message(_mock_can_message(ARBIT_GET_REQUEST, [1, 7]), SAMPLE_CAN_TO_MQTT, client, pending)
         # Step 2: process the GET reply (state=ON)
-        handle_can_message(_mock_can_message(ARBIT_GET_REPLY, [1]), SAMPLE_CONFIG, client, pending)
+        handle_can_message(_mock_can_message(ARBIT_GET_REPLY, [1]), SAMPLE_CAN_TO_MQTT, client, pending)
         client.publish.assert_called_once_with("dobiss/light/0107/state", "ON", retain=True)
         assert len(pending) == 0
 
@@ -324,18 +370,18 @@ class TestHandleCanMessageGetReply:
 
     def test_no_pending_gets_param_does_not_publish(self):
         msg = _mock_can_message(ARBIT_GET_REPLY, [1])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client)  # pending_gets omitted
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client)  # pending_gets omitted
         self.client.publish.assert_not_called()
 
     def test_empty_pending_gets_does_not_publish(self):
         msg = _mock_can_message(ARBIT_GET_REPLY, [1])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=deque())
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client, pending_gets=deque())
         self.client.publish.assert_not_called()
 
     def test_publishes_on_for_pending_light(self):
         pending = deque([(1, 0)])
         msg = _mock_can_message(ARBIT_GET_REPLY, [1])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client, pending_gets=pending)
         self.client.publish.assert_called_once_with(
             "dobiss/light/0100/state", "ON", retain=True
         )
@@ -343,7 +389,7 @@ class TestHandleCanMessageGetReply:
     def test_publishes_off_for_pending_light(self):
         pending = deque([(1, 0)])
         msg = _mock_can_message(ARBIT_GET_REPLY, [0])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client, pending_gets=pending)
         self.client.publish.assert_called_once_with(
             "dobiss/light/0100/state", "OFF", retain=True
         )
@@ -351,7 +397,7 @@ class TestHandleCanMessageGetReply:
     def test_publishes_only_to_queried_light_not_all(self):
         pending = deque([(1, 7)])  # queried Kitchen Spots, not all lights
         msg = _mock_can_message(ARBIT_GET_REPLY, [1])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client, pending_gets=pending)
         self.client.publish.assert_called_once_with(
             "dobiss/light/0107/state", "ON", retain=True
         )
@@ -359,27 +405,27 @@ class TestHandleCanMessageGetReply:
     def test_retain_flag_is_set(self):
         pending = deque([(1, 0)])
         msg = _mock_can_message(ARBIT_GET_REPLY, [1])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client, pending_gets=pending)
         assert self.client.publish.call_args[1]["retain"] is True
 
     def test_pending_request_consumed_after_reply(self):
         pending = deque([(1, 0)])
         msg = _mock_can_message(ARBIT_GET_REPLY, [1])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client, pending_gets=pending)
         assert len(pending) == 0
 
     def test_unconfigured_pending_light_does_not_publish(self):
         pending = deque([(9, 9)])  # not in config
         msg = _mock_can_message(ARBIT_GET_REPLY, [1])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client, pending_gets=pending)
         self.client.publish.assert_not_called()
 
     def test_fifo_queue_processes_in_order(self):
         """Two consecutive GET replies must update lights in request order."""
         pending = deque([(1, 0), (1, 7)])  # 0100 asked first, then 0107
         client = MagicMock()
-        handle_can_message(_mock_can_message(ARBIT_GET_REPLY, [1]), SAMPLE_CONFIG, client, pending)
-        handle_can_message(_mock_can_message(ARBIT_GET_REPLY, [0]), SAMPLE_CONFIG, client, pending)
+        handle_can_message(_mock_can_message(ARBIT_GET_REPLY, [1]), SAMPLE_CAN_TO_MQTT, client, pending)
+        handle_can_message(_mock_can_message(ARBIT_GET_REPLY, [0]), SAMPLE_CAN_TO_MQTT, client, pending)
         calls = client.publish.call_args_list
         assert calls[0][0] == ("dobiss/light/0100/state", "ON")
         assert calls[1][0] == ("dobiss/light/0107/state", "OFF")
@@ -389,7 +435,7 @@ class TestHandleCanMessageUnknown:
     def test_unrecognised_arbitration_id_does_not_publish(self):
         client = MagicMock()
         msg = _mock_can_message(0xDEADBEEF, [0, 0, 0, 0, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, client)
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, client)
         client.publish.assert_not_called()
 
 
@@ -428,7 +474,7 @@ class TestMakeOnConnect:
 class TestMakeOnMessage:
     def test_delegates_to_bus_send_on_valid_message(self):
         mock_bus = MagicMock()
-        on_message = make_on_message(SAMPLE_CONFIG, mock_bus)
+        on_message = make_on_message(SAMPLE_MQTT_TO_CAN, mock_bus)
 
         msg = MagicMock()
         msg.topic = "dobiss/light/0100/state/set"
@@ -439,7 +485,7 @@ class TestMakeOnMessage:
 
     def test_no_bus_send_for_invalid_payload(self):
         mock_bus = MagicMock()
-        on_message = make_on_message(SAMPLE_CONFIG, mock_bus)
+        on_message = make_on_message(SAMPLE_MQTT_TO_CAN, mock_bus)
 
         msg = MagicMock()
         msg.topic = "dobiss/light/0100/state/set"
@@ -450,7 +496,7 @@ class TestMakeOnMessage:
 
     def test_no_bus_send_for_unknown_topic(self):
         mock_bus = MagicMock()
-        on_message = make_on_message(SAMPLE_CONFIG, mock_bus)
+        on_message = make_on_message(SAMPLE_MQTT_TO_CAN, mock_bus)
 
         msg = MagicMock()
         msg.topic = "dobiss/light/9999/state/set"
