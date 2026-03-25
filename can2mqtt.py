@@ -1,3 +1,4 @@
+from collections import deque
 import can
 import paho.mqtt.client as mqtt
 import yaml
@@ -16,6 +17,11 @@ MQTT_PORT = 1883
 # CAN settings
 CAN_INTERFACE = "socketcan"
 CAN_CHANNEL = "can0"
+
+# CAN protocol arbitration IDs (Dobiss, reverse-engineered by dries007)
+ARBIT_GET_REQUEST = 0x01FCFF01  # GET state request:  [module, relay]
+ARBIT_GET_REPLY   = 0x01FDFF01  # GET state reply:    [state]
+ARBIT_SET_REPLY   = 0x0002FF01  # SET state reply:    [module, relay, state]
 
 
 def load_config(path="config.yaml"):
@@ -69,20 +75,45 @@ def handle_mqtt_message(topic, payload, config, bus):
     return False
 
 
-def handle_can_message(message, config, client):
-    """Process an incoming CAN message and publish the corresponding MQTT state."""
-    for light in config:
-        module, relay = parse_address(light["address"])
-        if message.arbitration_id == 0x0002FF01 and message.data[0] == module and message.data[1] == relay:
-            # Reply to SET: update the specific light
-            state_str = "ON" if message.data[2] == 1 else "OFF"
-            client.publish(f"dobiss/light/{light['address']}/state", state_str, retain=True)
-            logger.debug("Published MQTT message: %s", message)
-        elif message.arbitration_id == 0x01FDFF01:
-            # Reply to GET: broadcast state to all lights
-            state_str = "ON" if message.data[0] == 1 else "OFF"
-            client.publish(f"dobiss/light/{light['address']}/state", state_str, retain=True)
-            logger.debug("Updated light state based on GET reply: %s", message)
+def handle_can_message(message, config, client, pending_gets=None):
+    """Process an incoming CAN message and publish the corresponding MQTT state.
+
+    pending_gets is a collections.deque used to pair GET requests with their
+    replies. Pass the same instance on every call within a bus session; the
+    queue is populated when a GET request is snooped and consumed when the
+    matching GET reply arrives. When omitted (or None) GET replies are silently
+    ignored.
+
+    Background: the GET reply frame (0x01FDFF01) carries only a state byte — it
+    contains no module/relay address. Without tracking which GET request was
+    issued, it is impossible to determine which light the reply refers to.
+    """
+    arb = message.arbitration_id
+
+    if arb == ARBIT_GET_REQUEST:
+        # Snoop the GET request so we can correlate the reply later.
+        if pending_gets is not None:
+            pending_gets.append((message.data[0], message.data[1]))
+        return
+
+    if arb == ARBIT_SET_REPLY:
+        for light in config:
+            module, relay = parse_address(light["address"])
+            if message.data[0] == module and message.data[1] == relay:
+                state_str = "ON" if message.data[2] == 1 else "OFF"
+                client.publish(f"dobiss/light/{light['address']}/state", state_str, retain=True)
+                logger.debug("Published MQTT message: %s", message)
+                return
+
+    if arb == ARBIT_GET_REPLY and pending_gets:
+        req_module, req_relay = pending_gets.popleft()
+        for light in config:
+            module, relay = parse_address(light["address"])
+            if module == req_module and relay == req_relay:
+                state_str = "ON" if message.data[0] == 1 else "OFF"
+                client.publish(f"dobiss/light/{light['address']}/state", state_str, retain=True)
+                logger.debug("Updated light state based on GET reply: %s", message)
+                return
 
 
 def make_on_connect(config):
@@ -128,8 +159,9 @@ if __name__ == "__main__":
     # CAN bus setup
     bus = can.Bus(bustype=CAN_INTERFACE, channel=CAN_CHANNEL, bitrate=125000, receive_own_messages=True)
     bus.set_filters([
-        {"can_id": 0x0002FF01, "can_mask": 0x1FFFFFFF, "extended": True},  # Reply to SET
-        {"can_id": 0x01FDFF01, "can_mask": 0x1FFFFFFF, "extended": True},  # Reply to GET
+        {"can_id": ARBIT_GET_REQUEST, "can_mask": 0x1FFFFFFF, "extended": True},  # GET request (snoop)
+        {"can_id": ARBIT_SET_REPLY,   "can_mask": 0x1FFFFFFF, "extended": True},  # Reply to SET
+        {"can_id": ARBIT_GET_REPLY,   "can_mask": 0x1FFFFFFF, "extended": True},  # Reply to GET
     ])
 
     # MQTT client setup
@@ -144,8 +176,9 @@ if __name__ == "__main__":
     threading.Thread(target=httpd.serve_forever).start()
 
     # CAN bus loop
+    pending_gets = deque()
     while True:
         message = bus.recv()
-        handle_can_message(message, config, client)
+        handle_can_message(message, config, client, pending_gets)
 
     client.loop_stop()

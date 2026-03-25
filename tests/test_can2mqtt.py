@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import threading
+from collections import deque
 
 import pytest
 from unittest.mock import MagicMock, call, patch
@@ -15,6 +16,9 @@ from unittest.mock import MagicMock, call, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from can2mqtt import (
+    ARBIT_GET_REPLY,
+    ARBIT_GET_REQUEST,
+    ARBIT_SET_REPLY,
     RequestHandler,
     build_set_message,
     handle_can_message,
@@ -265,45 +269,120 @@ class TestHandleCanMessageSetReply:
         )
 
 
-class TestHandleCanMessageGetReply:
-    """Tests for CAN messages with arbitration_id 0x01FDFF01 (reply to GET).
+class TestHandleCanMessageGetRequest:
+    """Tests for GET request snooping (0x01FCFF01).
 
-    NOTE: The current implementation broadcasts the same state to *all*
-    configured lights. This is the behaviour being tested here.
+    The app cannot know which light a GET reply refers to unless it first
+    snoops the corresponding GET request.  handle_can_message records every
+    GET request into pending_gets so it can be matched with the reply.
+    """
+
+    def test_adds_module_relay_to_pending_gets(self):
+        pending = deque()
+        msg = _mock_can_message(ARBIT_GET_REQUEST, [1, 0])
+        handle_can_message(msg, SAMPLE_CONFIG, MagicMock(), pending_gets=pending)
+        assert list(pending) == [(1, 0)]
+
+    def test_does_not_publish(self):
+        client = MagicMock()
+        msg = _mock_can_message(ARBIT_GET_REQUEST, [1, 0])
+        handle_can_message(msg, SAMPLE_CONFIG, client, pending_gets=deque())
+        client.publish.assert_not_called()
+
+    def test_no_pending_gets_param_does_not_crash(self):
+        msg = _mock_can_message(ARBIT_GET_REQUEST, [1, 0])
+        handle_can_message(msg, SAMPLE_CONFIG, MagicMock())  # pending_gets omitted
+
+    def test_fifo_ordering_preserved(self):
+        pending = deque()
+        handle_can_message(_mock_can_message(ARBIT_GET_REQUEST, [1, 0]), SAMPLE_CONFIG, MagicMock(), pending)
+        handle_can_message(_mock_can_message(ARBIT_GET_REQUEST, [1, 7]), SAMPLE_CONFIG, MagicMock(), pending)
+        assert list(pending) == [(1, 0), (1, 7)]
+
+    def test_full_get_cycle_publishes_correct_light(self):
+        """Snoop request + process reply → only the queried light is updated."""
+        pending = deque()
+        client = MagicMock()
+        # Step 1: snoop the GET request for Kitchen Spots (module=1, relay=7)
+        handle_can_message(_mock_can_message(ARBIT_GET_REQUEST, [1, 7]), SAMPLE_CONFIG, client, pending)
+        # Step 2: process the GET reply (state=ON)
+        handle_can_message(_mock_can_message(ARBIT_GET_REPLY, [1]), SAMPLE_CONFIG, client, pending)
+        client.publish.assert_called_once_with("dobiss/light/0107/state", "ON", retain=True)
+        assert len(pending) == 0
+
+
+class TestHandleCanMessageGetReply:
+    """Tests for GET reply (0x01FDFF01) with pending-request correlation.
+
+    The GET reply frame carries only a state byte — no module/relay address.
+    The handler resolves which light to update by consuming the oldest entry
+    from pending_gets (populated when the GET request was snooped).
     """
 
     def setup_method(self):
         self.client = MagicMock()
 
-    def test_publishes_to_all_lights(self):
-        msg = _mock_can_message(0x01FDFF01, [1, 0, 0, 0, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client)
-        assert self.client.publish.call_count == len(SAMPLE_CONFIG)
+    def test_no_pending_gets_param_does_not_publish(self):
+        msg = _mock_can_message(ARBIT_GET_REPLY, [1])
+        handle_can_message(msg, SAMPLE_CONFIG, self.client)  # pending_gets omitted
+        self.client.publish.assert_not_called()
 
-    def test_publishes_on_state_to_all(self):
-        msg = _mock_can_message(0x01FDFF01, [1, 0, 0, 0, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client)
-        for c in self.client.publish.call_args_list:
-            assert c[0][1] == "ON"
+    def test_empty_pending_gets_does_not_publish(self):
+        msg = _mock_can_message(ARBIT_GET_REPLY, [1])
+        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=deque())
+        self.client.publish.assert_not_called()
 
-    def test_publishes_off_state_to_all(self):
-        msg = _mock_can_message(0x01FDFF01, [0, 0, 0, 0, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client)
-        for c in self.client.publish.call_args_list:
-            assert c[0][1] == "OFF"
+    def test_publishes_on_for_pending_light(self):
+        pending = deque([(1, 0)])
+        msg = _mock_can_message(ARBIT_GET_REPLY, [1])
+        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        self.client.publish.assert_called_once_with(
+            "dobiss/light/0100/state", "ON", retain=True
+        )
+
+    def test_publishes_off_for_pending_light(self):
+        pending = deque([(1, 0)])
+        msg = _mock_can_message(ARBIT_GET_REPLY, [0])
+        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        self.client.publish.assert_called_once_with(
+            "dobiss/light/0100/state", "OFF", retain=True
+        )
+
+    def test_publishes_only_to_queried_light_not_all(self):
+        pending = deque([(1, 7)])  # queried Kitchen Spots, not all lights
+        msg = _mock_can_message(ARBIT_GET_REPLY, [1])
+        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        self.client.publish.assert_called_once_with(
+            "dobiss/light/0107/state", "ON", retain=True
+        )
 
     def test_retain_flag_is_set(self):
-        msg = _mock_can_message(0x01FDFF01, [1, 0, 0, 0, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client)
-        for c in self.client.publish.call_args_list:
-            assert c[1]["retain"] is True
+        pending = deque([(1, 0)])
+        msg = _mock_can_message(ARBIT_GET_REPLY, [1])
+        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        assert self.client.publish.call_args[1]["retain"] is True
 
-    def test_publishes_correct_topics(self):
-        msg = _mock_can_message(0x01FDFF01, [1, 0, 0, 0, 0])
-        handle_can_message(msg, SAMPLE_CONFIG, self.client)
-        published_topics = [c[0][0] for c in self.client.publish.call_args_list]
-        expected = [f"dobiss/light/{light['address']}/state" for light in SAMPLE_CONFIG]
-        assert published_topics == expected
+    def test_pending_request_consumed_after_reply(self):
+        pending = deque([(1, 0)])
+        msg = _mock_can_message(ARBIT_GET_REPLY, [1])
+        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        assert len(pending) == 0
+
+    def test_unconfigured_pending_light_does_not_publish(self):
+        pending = deque([(9, 9)])  # not in config
+        msg = _mock_can_message(ARBIT_GET_REPLY, [1])
+        handle_can_message(msg, SAMPLE_CONFIG, self.client, pending_gets=pending)
+        self.client.publish.assert_not_called()
+
+    def test_fifo_queue_processes_in_order(self):
+        """Two consecutive GET replies must update lights in request order."""
+        pending = deque([(1, 0), (1, 7)])  # 0100 asked first, then 0107
+        client = MagicMock()
+        handle_can_message(_mock_can_message(ARBIT_GET_REPLY, [1]), SAMPLE_CONFIG, client, pending)
+        handle_can_message(_mock_can_message(ARBIT_GET_REPLY, [0]), SAMPLE_CONFIG, client, pending)
+        calls = client.publish.call_args_list
+        assert calls[0][0] == ("dobiss/light/0100/state", "ON")
+        assert calls[1][0] == ("dobiss/light/0107/state", "OFF")
 
 
 class TestHandleCanMessageUnknown:

@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import threading
+from collections import deque
 from unittest.mock import MagicMock, call
 
 import can
@@ -57,14 +58,28 @@ def _unique_channel() -> str:
 def sim_and_bus():
     """Yield (simulator, app_bus) sharing the same virtual CAN channel."""
     channel = _unique_channel()
-
     sim = DobissSimulator(channel=channel)
     sim.start()
-
     app_bus = can.Bus(interface="virtual", channel=channel)
-
     yield sim, app_bus
+    app_bus.shutdown()
+    sim.stop()
 
+
+@pytest.fixture()
+def sim_bus_and_panel():
+    """Yield (simulator, app_bus, panel_bus) on the same virtual channel.
+
+    panel_bus simulates a Dobiss wall panel that issues GET requests.
+    app_bus  simulates the can2mqtt application receiving all traffic.
+    """
+    channel = _unique_channel()
+    sim = DobissSimulator(channel=channel)
+    sim.start()
+    app_bus = can.Bus(interface="virtual", channel=channel)
+    panel_bus = can.Bus(interface="virtual", channel=channel)
+    yield sim, app_bus, panel_bus
+    panel_bus.shutdown()
     app_bus.shutdown()
     sim.stop()
 
@@ -202,16 +217,8 @@ class TestGetRoundTrip:
         assert reply is not None
         assert reply.data[0] == 0
 
-    def test_get_reply_broadcasts_to_all_lights(self, sim_and_bus):
-        """Documents the current (buggy) behavior: GET reply updates all lights.
-
-        NOTE: This is a known limitation of the protocol — the GET reply frame
-        (0x01FDFF01) carries only a state byte with no module/relay address.
-        Without tracking which GET request was issued, the application cannot
-        determine *which* light the reply refers to and currently updates every
-        configured light with the same state. A future fix would require pairing
-        GET requests with their replies via a pending-request queue.
-        """
+    def test_get_reply_without_pending_gets_does_not_publish(self, sim_and_bus):
+        """Without a pending_gets queue, GET replies are silently ignored."""
         sim, app_bus = sim_and_bus
         mqtt_client = MagicMock()
 
@@ -220,10 +227,9 @@ class TestGetRoundTrip:
 
         reply = recv_one(app_bus, timeout=1.0)
         assert reply is not None
-        handle_can_message(reply, CONFIG, mqtt_client)
+        handle_can_message(reply, CONFIG, mqtt_client)  # no pending_gets
 
-        # Current behavior: all lights get the same state
-        assert mqtt_client.publish.call_count == len(CONFIG)
+        mqtt_client.publish.assert_not_called()
 
     def test_get_reply_state_reflects_previous_set(self, sim_and_bus):
         """State read back via GET must match what was written via SET."""
@@ -239,6 +245,88 @@ class TestGetRoundTrip:
         reply = recv_one(app_bus, timeout=1.0)
         assert reply is not None
         assert reply.data[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# GET round-trip with pending_gets (fixed behaviour)
+# ---------------------------------------------------------------------------
+
+class TestGetRoundTripFixed:
+    """Full GET cycle: wall panel sends request → app snoops → simulator replies
+    → app updates only the queried light.
+
+    Uses panel_bus to simulate a wall panel sending GET requests so that
+    app_bus receives the request as an external message (not its own echo).
+    """
+
+    def _panel_get(self, panel_bus, module, relay):
+        panel_bus.send(can.Message(
+            arbitration_id=ARBIT_GET_REQUEST,
+            data=[module, relay],
+            is_extended_id=True,
+        ))
+
+    def _process_n(self, app_bus, config, client, pending_gets, n, timeout=1.0):
+        for _ in range(n):
+            msg = recv_one(app_bus, timeout=timeout)
+            if msg:
+                handle_can_message(msg, config, client, pending_gets)
+
+    def test_only_queried_light_is_updated(self, sim_bus_and_panel):
+        sim, app_bus, panel_bus = sim_bus_and_panel
+        mqtt_client = MagicMock()
+        pending_gets = deque()
+
+        sim.set_state(1, 0, 1)  # 0100 = ON
+        self._panel_get(panel_bus, module=1, relay=0)
+
+        # app_bus sees: (1) GET request from panel, (2) GET reply from simulator
+        self._process_n(app_bus, CONFIG, mqtt_client, pending_gets, n=2)
+
+        mqtt_client.publish.assert_called_once_with(
+            "dobiss/light/0100/state", "ON", retain=True
+        )
+
+    def test_correct_state_published(self, sim_bus_and_panel):
+        sim, app_bus, panel_bus = sim_bus_and_panel
+        mqtt_client = MagicMock()
+        pending_gets = deque()
+
+        sim.set_state(1, 7, 0)  # 0107 Kitchen Spots = OFF
+        self._panel_get(panel_bus, module=1, relay=7)
+        self._process_n(app_bus, CONFIG, mqtt_client, pending_gets, n=2)
+
+        mqtt_client.publish.assert_called_once_with(
+            "dobiss/light/0107/state", "OFF", retain=True
+        )
+
+    def test_consecutive_gets_processed_in_order(self, sim_bus_and_panel):
+        sim, app_bus, panel_bus = sim_bus_and_panel
+        mqtt_client = MagicMock()
+        pending_gets = deque()
+
+        sim.set_state(1, 0, 1)  # 0100 = ON
+        sim.set_state(1, 7, 0)  # 0107 = OFF
+
+        self._panel_get(panel_bus, module=1, relay=0)
+        self._panel_get(panel_bus, module=1, relay=7)
+
+        # 2 GET requests + 2 GET replies = 4 messages
+        self._process_n(app_bus, CONFIG, mqtt_client, pending_gets, n=4)
+
+        calls = mqtt_client.publish.call_args_list
+        assert len(calls) == 2
+        assert calls[0][0] == ("dobiss/light/0100/state", "ON")
+        assert calls[1][0] == ("dobiss/light/0107/state", "OFF")
+
+    def test_pending_gets_empty_after_replies_consumed(self, sim_bus_and_panel):
+        sim, app_bus, panel_bus = sim_bus_and_panel
+        pending_gets = deque()
+
+        self._panel_get(panel_bus, module=1, relay=0)
+        self._process_n(app_bus, CONFIG, MagicMock(), pending_gets, n=2)
+
+        assert len(pending_gets) == 0
 
 
 # ---------------------------------------------------------------------------
