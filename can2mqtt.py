@@ -29,12 +29,18 @@ def load_config(path="config.yaml"):
 
 
 def parse_address(address_str):
-    """Parse a hex address string into a (module, relay) tuple.
+    """Parse a 4-char hex address string into a (module, relay) tuple.
 
     Example: '0107' -> (1, 7)
     """
+    if not isinstance(address_str, str) or len(address_str) != 4:
+        raise ValueError("Address must be a 4-character hex string")
     address = int(address_str, 16)
-    return address >> 8, address & 0xFF
+    module = address >> 8
+    relay = address & 0xFF
+    if not (0 <= module <= 0xFF and 0 <= relay <= 0xFF):
+        raise ValueError("Address bytes must be within 0x00..0xFF")
+    return module, relay
 
 
 def build_lookup_tables(config):
@@ -92,6 +98,11 @@ def handle_mqtt_message(topic, payload, mqtt_to_can, bus):
     return True
 
 
+def _has_min_data_len(message, min_len):
+    """Return True when message has at least min_len bytes in its data field."""
+    return hasattr(message, "data") and len(message.data) >= min_len
+
+
 def handle_can_message(message, can_to_mqtt, client, pending_gets=None):
     """Process an incoming CAN message and publish the corresponding MQTT state.
 
@@ -111,11 +122,16 @@ def handle_can_message(message, can_to_mqtt, client, pending_gets=None):
 
     if arb == ARBIT_GET_REQUEST:
         # Snoop the GET request so we can correlate the reply later.
-        if pending_gets is not None:
+        if pending_gets is not None and _has_min_data_len(message, 2):
             pending_gets.append((message.data[0], message.data[1]))
+        else:
+            logger.warning("Ignoring malformed GET request frame")
         return
 
     if arb == ARBIT_SET_REPLY:
+        if not _has_min_data_len(message, 3):
+            logger.warning("Ignoring malformed SET reply frame")
+            return
         topic = can_to_mqtt.get((message.data[0], message.data[1]))
         if topic is not None:
             state_str = "ON" if message.data[2] == 1 else "OFF"
@@ -124,6 +140,9 @@ def handle_can_message(message, can_to_mqtt, client, pending_gets=None):
         return
 
     if arb == ARBIT_GET_REPLY and pending_gets:
+        if not _has_min_data_len(message, 1):
+            logger.warning("Ignoring malformed GET reply frame")
+            return
         req_module, req_relay = pending_gets.popleft()
         topic = can_to_mqtt.get((req_module, req_relay))
         if topic is not None:
@@ -191,7 +210,8 @@ if __name__ == "__main__":
     client.loop_start()
 
     # HTTP server
-    httpd = HTTPServer(("0.0.0.0", 8000), RequestHandler)
+    # Bind to loopback to avoid exposing the config file on all interfaces.
+    httpd = HTTPServer(("127.0.0.1", 8000), RequestHandler)
     threading.Thread(target=httpd.serve_forever).start()
 
     # CAN bus loop
