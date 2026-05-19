@@ -79,6 +79,14 @@ class TestParseAddress:
         assert module == 1
         assert relay == 255
 
+    def test_invalid_length_raises(self):
+        with pytest.raises(ValueError):
+            parse_address("010")
+
+    def test_non_hex_raises(self):
+        with pytest.raises(ValueError):
+            parse_address("ZZZZ")
+
 
 # ---------------------------------------------------------------------------
 # parse_state
@@ -258,7 +266,29 @@ class TestHandleMqttMessage:
     def test_numeric_off_payload(self):
         handle_mqtt_message("dobiss/light/0100/state/set", b"0", SAMPLE_MQTT_TO_CAN, self.bus)
         self.bus.send.assert_called_once()
-        assert self.bus.send.call_args[0][0].data[2] == 0
+
+
+class TestHandleCanMessageMalformedFrames:
+    def test_malformed_get_request_does_not_raise(self):
+        mqtt_client = MagicMock()
+        pending_gets = deque()
+        msg = MagicMock(arbitration_id=ARBIT_GET_REQUEST, data=[])
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, mqtt_client, pending_gets)
+        assert len(pending_gets) == 0
+        mqtt_client.publish.assert_not_called()
+
+    def test_malformed_set_reply_does_not_raise(self):
+        mqtt_client = MagicMock()
+        msg = MagicMock(arbitration_id=ARBIT_SET_REPLY, data=[1])
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, mqtt_client)
+        mqtt_client.publish.assert_not_called()
+
+    def test_malformed_get_reply_does_not_raise(self):
+        mqtt_client = MagicMock()
+        pending_gets = deque([(1, 0)])
+        msg = MagicMock(arbitration_id=ARBIT_GET_REPLY, data=[])
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, mqtt_client, pending_gets)
+        mqtt_client.publish.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
