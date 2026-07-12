@@ -1,0 +1,4 @@
+--require-hashes
+python-can
+paho-mqtt
+pyyaml

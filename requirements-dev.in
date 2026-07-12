@@ -1,0 +1,6 @@
+--require-hashes
+-r requirements.in
+pytest
+pytest-cov
+bandit
+pip-audit

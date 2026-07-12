@@ -19,6 +19,7 @@ from can2mqtt import (
     ARBIT_GET_REPLY,
     ARBIT_GET_REQUEST,
     ARBIT_SET_REPLY,
+    PendingGetTracker,
     RequestHandler,
     build_lookup_tables,
     build_set_message,
@@ -86,6 +87,11 @@ class TestParseAddress:
     def test_non_hex_raises(self):
         with pytest.raises(ValueError):
             parse_address("ZZZZ")
+
+    @pytest.mark.parametrize("address", ["+100", " 100", "\t100", "-100"])
+    def test_non_hex_characters_raise(self, address):
+        with pytest.raises(ValueError):
+            parse_address(address)
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +296,43 @@ class TestHandleCanMessageMalformedFrames:
         handle_can_message(msg, SAMPLE_CAN_TO_MQTT, mqtt_client, pending_gets)
         mqtt_client.publish.assert_not_called()
 
+    def test_unknown_set_reply_state_is_ignored(self):
+        mqtt_client = MagicMock()
+        msg = MagicMock(arbitration_id=ARBIT_SET_REPLY, data=[1, 0, 2])
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, mqtt_client)
+        mqtt_client.publish.assert_not_called()
+
+    def test_unknown_get_reply_state_is_ignored_and_request_consumed(self):
+        mqtt_client = MagicMock()
+        pending_gets = deque([(1, 0)])
+        msg = MagicMock(arbitration_id=ARBIT_GET_REPLY, data=[255])
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, mqtt_client, pending_gets)
+        mqtt_client.publish.assert_not_called()
+        assert len(pending_gets) == 0
+
+
+class TestPendingGetTracker:
+    def test_overflow_invalidates_correlation_until_cooldown(self):
+        now = [100.0]
+        tracker = PendingGetTracker(max_pending=2, ttl_seconds=5, clock=lambda: now[0])
+        tracker.append((1, 0))
+        tracker.append((1, 1))
+        tracker.append((1, 2))
+        assert not tracker
+        tracker.append((1, 3))
+        assert not tracker
+        now[0] = 106.0
+        tracker.append((1, 4))
+        assert list(tracker) == [(1, 4)]
+
+    def test_expires_stale_entries(self):
+        now = [100.0]
+        tracker = PendingGetTracker(max_pending=10, ttl_seconds=5, clock=lambda: now[0])
+        tracker.append((1, 0))
+        now[0] = 106.0
+        assert not tracker
+        assert len(tracker) == 0
+
 
 # ---------------------------------------------------------------------------
 # handle_can_message
@@ -336,13 +379,10 @@ class TestHandleCanMessageSetReply:
         handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client)
         self.client.publish.assert_not_called()
 
-    def test_data_byte2_nonzero_but_not_1_is_off(self):
-        # Only data[2] == 1 means ON; anything else is OFF
+    def test_data_byte2_nonzero_but_not_1_is_ignored(self):
         msg = _mock_can_message(0x0002FF01, [1, 0, 2, 0, 0])
         handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client)
-        self.client.publish.assert_called_once_with(
-            "dobiss/light/0100/state", "OFF", retain=True
-        )
+        self.client.publish.assert_not_called()
 
 
 class TestHandleCanMessageGetRequest:
@@ -562,6 +602,31 @@ class TestLoadConfig:
         assert result[0]["address"] == "0100"
         assert result[1]["address"] == "0101"
 
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "{}\n",
+            "- name: Missing address\n",
+            "- address: '0100'\n",
+            "- name: ''\n  address: '0100'\n",
+            "- name: Bad\n  address: 'ZZZZ'\n",
+        ],
+    )
+    def test_rejects_invalid_schema(self, tmp_path, content):
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(content)
+        with pytest.raises(ValueError):
+            load_config(str(cfg_file))
+
+    def test_rejects_duplicate_addresses(self, tmp_path):
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            "- name: Light A\n  address: '0100'\n"
+            "- name: Light B\n  address: '0100'\n"
+        )
+        with pytest.raises(ValueError, match="duplicate"):
+            load_config(str(cfg_file))
+
 
 # ---------------------------------------------------------------------------
 # RequestHandler (HTTP server)
@@ -574,10 +639,11 @@ class TestRequestHandler:
     def server_with_config(self, tmp_path):
         """Start a one-shot HTTP server serving a temporary config file."""
         cfg_file = tmp_path / "config.yaml"
-        cfg_file.write_text("- name: Test\n  address: '0100'\n")
+        cfg_file.write_text("- name: Test\n  address: '010a'\n")
 
-        # Point the handler at the temp config
+        # Point the handler at the temp config and serve the canonical form.
         RequestHandler.config_path = str(cfg_file)
+        RequestHandler.config_data = load_config(str(cfg_file))
 
         httpd = HTTPServer(("127.0.0.1", 0), RequestHandler)
         port = httpd.server_address[1]
@@ -588,8 +654,9 @@ class TestRequestHandler:
         yield port
 
         httpd.shutdown()
-        # Restore default after the test
+        # Restore defaults after the test
         RequestHandler.config_path = "config.yaml"
+        RequestHandler.config_data = None
 
     def test_config_yaml_returns_200(self, server_with_config):
         conn = http.client.HTTPConnection("127.0.0.1", server_with_config, timeout=5)
@@ -610,7 +677,8 @@ class TestRequestHandler:
         conn.request("GET", "/config.yaml")
         response = conn.getresponse()
         body = response.read().decode()
-        assert "0100" in body
+        assert "010A" in body
+        assert "010a" not in body
         conn.close()
 
     def test_unknown_path_returns_404(self, server_with_config):
