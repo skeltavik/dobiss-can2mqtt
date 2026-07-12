@@ -167,8 +167,9 @@ The tests include a virtual Dobiss controller on python-can's virtual bus, so MQ
 Edit `requirements.in` or `requirements-dev.in`, then regenerate both lockfiles with a trusted `uv` installation:
 
 ```bash
-uv pip compile requirements.in --python-version 3.10 --generate-hashes --output-file requirements.txt
-uv pip compile requirements-dev.in --python-version 3.10 --generate-hashes --output-file requirements-dev.txt
+cutoff="$(python -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+uv pip compile requirements.in --python-version 3.10 --exclude-newer "$cutoff" --generate-hashes --output-file requirements.txt
+uv pip compile requirements-dev.in --python-version 3.10 --exclude-newer "$cutoff" --generate-hashes --output-file requirements-dev.txt
 python scripts/check_pinned_dependencies.py
 ```
 
