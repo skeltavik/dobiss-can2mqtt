@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .coverage
 .pytest_cache/
+
+# Local installation and room mapping
+config.yaml

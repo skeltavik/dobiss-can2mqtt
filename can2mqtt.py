@@ -1,4 +1,6 @@
 from collections import deque
+import os
+import time
 import can
 import paho.mqtt.client as mqtt
 import yaml
@@ -9,12 +11,19 @@ import threading
 logger = logging.getLogger(__name__)
 
 # MQTT settings
-MQTT_BROKER = "localhost"
-MQTT_PORT = 1883
+MQTT_BROKER = os.getenv("DOBISS_MQTT_HOST", "localhost")
+MQTT_PORT = int(os.getenv("DOBISS_MQTT_PORT", "1883"))
+MQTT_USERNAME = os.getenv("DOBISS_MQTT_USERNAME")
+MQTT_PASSWORD = os.getenv("DOBISS_MQTT_PASSWORD")
+MQTT_TLS = os.getenv("DOBISS_MQTT_TLS", "false").lower() in {"1", "true", "yes"}
 
 # CAN settings
-CAN_INTERFACE = "socketcan"
-CAN_CHANNEL = "can0"
+CAN_INTERFACE = os.getenv("DOBISS_CAN_INTERFACE", "socketcan")
+CAN_CHANNEL = os.getenv("DOBISS_CAN_CHANNEL", "can0")
+
+CONFIG_PATH = os.getenv("DOBISS_CONFIG_PATH", "config.yaml")
+HTTP_HOST = os.getenv("DOBISS_HTTP_HOST", "127.0.0.1")
+HTTP_PORT = int(os.getenv("DOBISS_HTTP_PORT", "8000"))
 
 # CAN protocol arbitration IDs (Dobiss, reverse-engineered by dries007)
 ARBIT_GET_REQUEST = 0x01FCFF01  # GET state request:  [module, relay]
@@ -22,10 +31,70 @@ ARBIT_GET_REPLY   = 0x01FDFF01  # GET state reply:    [state]
 ARBIT_SET_REPLY   = 0x0002FF01  # SET state reply:    [module, relay, state]
 
 
+class PendingGetTracker:
+    """Bounded, expiring FIFO for address-less Dobiss GET replies."""
+
+    def __init__(self, max_pending=256, ttl_seconds=5.0, clock=time.monotonic):
+        if max_pending < 1 or ttl_seconds <= 0:
+            raise ValueError("max_pending and ttl_seconds must be positive")
+        self._entries = deque(maxlen=max_pending)
+        self._ttl_seconds = ttl_seconds
+        self._clock = clock
+
+    def _purge(self):
+        cutoff = self._clock() - self._ttl_seconds
+        while self._entries and self._entries[0][0] < cutoff:
+            self._entries.popleft()
+
+    def append(self, address):
+        self._purge()
+        self._entries.append((self._clock(), address))
+
+    def popleft(self):
+        self._purge()
+        if not self._entries:
+            raise IndexError("pop from an empty PendingGetTracker")
+        return self._entries.popleft()[1]
+
+    def __bool__(self):
+        self._purge()
+        return bool(self._entries)
+
+    def __len__(self):
+        self._purge()
+        return len(self._entries)
+
+    def __iter__(self):
+        self._purge()
+        return (address for _, address in tuple(self._entries))
+
+
 def load_config(path="config.yaml"):
-    """Load light configuration from a YAML file."""
-    with open(path, "r") as file:
-        return yaml.safe_load(file)
+    """Load and validate light configuration from a YAML file."""
+    with open(path, "r", encoding="utf-8") as file:
+        config = yaml.safe_load(file)
+    if not isinstance(config, list):
+        raise ValueError("Configuration must be a list of lights")
+    addresses = set()
+    for index, light in enumerate(config):
+        if not isinstance(light, dict):
+            raise ValueError(f"Light {index} must be a mapping")
+        name = light.get("name")
+        address = light.get("address")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"Light {index} requires a non-empty name")
+        if not isinstance(address, str):
+            raise ValueError(f"Light {index} has an invalid address")
+        try:
+            parse_address(address)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Light {index} has an invalid address") from exc
+        normalized = address.upper()
+        if normalized in addresses:
+            raise ValueError(f"Light {index} has duplicate address {normalized}")
+        addresses.add(normalized)
+        light["address"] = normalized
+    return config
 
 
 def parse_address(address_str):
@@ -70,6 +139,11 @@ def parse_state(payload):
     if payload in [b"OFF", b"0"]:
         return 0
     return None
+
+
+def parse_can_state(value):
+    """Map valid Dobiss state bytes and reject ambiguous values."""
+    return {0: "OFF", 1: "ON"}.get(value)
 
 
 def build_set_message(module, relay, state):
@@ -134,7 +208,10 @@ def handle_can_message(message, can_to_mqtt, client, pending_gets=None):
             return
         topic = can_to_mqtt.get((message.data[0], message.data[1]))
         if topic is not None:
-            state_str = "ON" if message.data[2] == 1 else "OFF"
+            state_str = parse_can_state(message.data[2])
+            if state_str is None:
+                logger.warning("Ignoring unknown SET reply state: %r", message.data[2])
+                return
             client.publish(topic, state_str, retain=True)
             logger.debug("Published MQTT message: %s", message)
         return
@@ -146,7 +223,10 @@ def handle_can_message(message, can_to_mqtt, client, pending_gets=None):
         req_module, req_relay = pending_gets.popleft()
         topic = can_to_mqtt.get((req_module, req_relay))
         if topic is not None:
-            state_str = "ON" if message.data[0] == 1 else "OFF"
+            state_str = parse_can_state(message.data[0])
+            if state_str is None:
+                logger.warning("Ignoring unknown GET reply state: %r", message.data[0])
+                return
             client.publish(topic, state_str, retain=True)
             logger.debug("Updated light state based on GET reply: %s", message)
 
@@ -191,7 +271,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    config = load_config("config.yaml")
+    config = load_config(CONFIG_PATH)
     can_to_mqtt, mqtt_to_can = build_lookup_tables(config)
 
     # CAN bus setup
@@ -206,16 +286,21 @@ if __name__ == "__main__":
     client = mqtt.Client()
     client.on_connect = make_on_connect(config)
     client.on_message = make_on_message(mqtt_to_can, bus)
+    if MQTT_USERNAME:
+        client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+    if MQTT_TLS:
+        client.tls_set()
     client.connect(MQTT_BROKER, MQTT_PORT, 60)
     client.loop_start()
 
     # HTTP server
-    # Bind to loopback to avoid exposing the config file on all interfaces.
-    httpd = HTTPServer(("127.0.0.1", 8000), RequestHandler)
+    # Loopback is the secure default; set DOBISS_HTTP_HOST for trusted LAN access.
+    RequestHandler.config_path = CONFIG_PATH
+    httpd = HTTPServer((HTTP_HOST, HTTP_PORT), RequestHandler)
     threading.Thread(target=httpd.serve_forever).start()
 
     # CAN bus loop
-    pending_gets = deque()
+    pending_gets = PendingGetTracker()
     while True:
         message = bus.recv()
         handle_can_message(message, can_to_mqtt, client, pending_gets)

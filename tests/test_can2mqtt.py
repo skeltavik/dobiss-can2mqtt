@@ -19,6 +19,7 @@ from can2mqtt import (
     ARBIT_GET_REPLY,
     ARBIT_GET_REQUEST,
     ARBIT_SET_REPLY,
+    PendingGetTracker,
     RequestHandler,
     build_lookup_tables,
     build_set_message,
@@ -290,6 +291,37 @@ class TestHandleCanMessageMalformedFrames:
         handle_can_message(msg, SAMPLE_CAN_TO_MQTT, mqtt_client, pending_gets)
         mqtt_client.publish.assert_not_called()
 
+    def test_unknown_set_reply_state_is_ignored(self):
+        mqtt_client = MagicMock()
+        msg = MagicMock(arbitration_id=ARBIT_SET_REPLY, data=[1, 0, 2])
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, mqtt_client)
+        mqtt_client.publish.assert_not_called()
+
+    def test_unknown_get_reply_state_is_ignored_and_request_consumed(self):
+        mqtt_client = MagicMock()
+        pending_gets = deque([(1, 0)])
+        msg = MagicMock(arbitration_id=ARBIT_GET_REPLY, data=[255])
+        handle_can_message(msg, SAMPLE_CAN_TO_MQTT, mqtt_client, pending_gets)
+        mqtt_client.publish.assert_not_called()
+        assert len(pending_gets) == 0
+
+
+class TestPendingGetTracker:
+    def test_discards_oldest_entry_when_bounded(self):
+        tracker = PendingGetTracker(max_pending=2, ttl_seconds=60)
+        tracker.append((1, 0))
+        tracker.append((1, 1))
+        tracker.append((1, 2))
+        assert list(tracker) == [(1, 1), (1, 2)]
+
+    def test_expires_stale_entries(self):
+        now = [100.0]
+        tracker = PendingGetTracker(max_pending=10, ttl_seconds=5, clock=lambda: now[0])
+        tracker.append((1, 0))
+        now[0] = 106.0
+        assert not tracker
+        assert len(tracker) == 0
+
 
 # ---------------------------------------------------------------------------
 # handle_can_message
@@ -336,13 +368,10 @@ class TestHandleCanMessageSetReply:
         handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client)
         self.client.publish.assert_not_called()
 
-    def test_data_byte2_nonzero_but_not_1_is_off(self):
-        # Only data[2] == 1 means ON; anything else is OFF
+    def test_data_byte2_nonzero_but_not_1_is_ignored(self):
         msg = _mock_can_message(0x0002FF01, [1, 0, 2, 0, 0])
         handle_can_message(msg, SAMPLE_CAN_TO_MQTT, self.client)
-        self.client.publish.assert_called_once_with(
-            "dobiss/light/0100/state", "OFF", retain=True
-        )
+        self.client.publish.assert_not_called()
 
 
 class TestHandleCanMessageGetRequest:
@@ -561,6 +590,31 @@ class TestLoadConfig:
         assert len(result) == 2
         assert result[0]["address"] == "0100"
         assert result[1]["address"] == "0101"
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "{}\n",
+            "- name: Missing address\n",
+            "- address: '0100'\n",
+            "- name: ''\n  address: '0100'\n",
+            "- name: Bad\n  address: 'ZZZZ'\n",
+        ],
+    )
+    def test_rejects_invalid_schema(self, tmp_path, content):
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(content)
+        with pytest.raises(ValueError):
+            load_config(str(cfg_file))
+
+    def test_rejects_duplicate_addresses(self, tmp_path):
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text(
+            "- name: Light A\n  address: '0100'\n"
+            "- name: Light B\n  address: '0100'\n"
+        )
+        with pytest.raises(ValueError, match="duplicate"):
+            load_config(str(cfg_file))
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,4 @@
+- name: Example Light 1
+  address: '0100'
+- name: Example Light 2
+  address: '0101'
