@@ -1,0 +1,49 @@
+name: Set up Aikido Safe Chain
+description: Install a checksum-verified, version-pinned Safe Chain release for CI
+
+runs:
+  using: composite
+  steps:
+    - name: Install Safe Chain on Linux or macOS
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        AIKIDO_SAFE_CHAIN_VERSION: 1.5.12
+        SAFE_CHAIN_INSTALLER_SHA256: e40995d546160bf18788dbfc6e9a4a765152abeca92014adf85102cf6b13d890
+      run: |
+        set -euo pipefail
+        installer="$RUNNER_TEMP/install-safe-chain.sh"
+        curl --proto '=https' --tlsv1.2 -fsSLo "$installer"           "https://github.com/AikidoSec/safe-chain/releases/download/${AIKIDO_SAFE_CHAIN_VERSION}/install-safe-chain.sh"
+        if command -v sha256sum >/dev/null 2>&1; then
+          printf '%s  %s\n' "$SAFE_CHAIN_INSTALLER_SHA256" "$installer" | sha256sum -c -
+        else
+          printf '%s  %s\n' "$SAFE_CHAIN_INSTALLER_SHA256" "$installer" | shasum -a 256 -c -
+        fi
+        sh "$installer" --ci
+
+    - name: Install Safe Chain on Windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        AIKIDO_SAFE_CHAIN_VERSION: 1.5.12
+        SAFE_CHAIN_INSTALLER_SHA256: 8e7abaf31b03b1155701ea42dde0a19ff3d15d45173eca9589d792b967c3ec1f
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $installer = Join-Path $env:RUNNER_TEMP 'install-safe-chain.ps1'
+        $url = "https://github.com/AikidoSec/safe-chain/releases/download/$env:AIKIDO_SAFE_CHAIN_VERSION/install-safe-chain.ps1"
+        Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+        $actual = (Get-FileHash -Path $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $env:SAFE_CHAIN_INSTALLER_SHA256) {
+          throw "Safe Chain installer checksum mismatch: $actual"
+        }
+        & $installer -ci
+
+    - name: Verify Safe Chain on Linux or macOS
+      if: runner.os != 'Windows'
+      shell: bash
+      run: safe-chain --version
+
+    - name: Verify Safe Chain on Windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: safe-chain --version

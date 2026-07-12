@@ -29,6 +29,8 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: requirements-dev.txt
+      - name: Set up Aikido Safe Chain
+        uses: ./.github/actions/setup-safe-chain
       - name: Install hash-pinned dependencies
         run: uv pip install --system --require-hashes -r requirements-dev.txt
       - name: Verify immutable dependencies and Actions
