@@ -62,12 +62,13 @@ def check_python_requirements(errors: list[str]) -> None:
         for record in records:
             if record.startswith(("-r ", "--requirement ", "--require-hashes", "--index-url", "--extra-index-url")):
                 continue
-            if record.startswith(("-e ", "--editable ", "git+", "http://", "https://")):
+            effective = record.split("#", 1)[0].rstrip()
+            if effective.startswith(("-e ", "--editable ", "git+", "http://", "https://")):
                 errors.append(f"{path.relative_to(ROOT)}: editable/VCS/URL dependency is forbidden: {record}")
                 continue
-            if "==" not in record:
+            if "==" not in effective:
                 errors.append(f"{path.relative_to(ROOT)}: dependency must use an exact == version: {record}")
-            if not HASH.search(record):
+            if not HASH.search(effective):
                 errors.append(f"{path.relative_to(ROOT)}: dependency lacks a sha256 hash: {record}")
 
 

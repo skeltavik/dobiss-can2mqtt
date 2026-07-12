@@ -34,6 +34,17 @@ def test_rejects_unhashed_dependency(monkeypatch, tmp_path):
     assert any("lacks a sha256 hash" in error for error in errors)
 
 
+def test_rejects_hash_that_only_appears_in_comment(monkeypatch, tmp_path):
+    configure_root(monkeypatch, tmp_path)
+    digest = "b" * 64
+    (tmp_path / "requirements.txt").write_text(
+        f"pyyaml==6.0.3  # --hash=sha256:{digest}\n"
+    )
+    errors = []
+    policy.check_python_requirements(errors)
+    assert any("lacks a sha256 hash" in error for error in errors)
+
+
 def test_accepts_sha_pinned_action_and_hashed_dependency(monkeypatch, tmp_path):
     workflows = configure_root(monkeypatch, tmp_path)
     sha = "a" * 40

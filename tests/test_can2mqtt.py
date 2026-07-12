@@ -88,6 +88,11 @@ class TestParseAddress:
         with pytest.raises(ValueError):
             parse_address("ZZZZ")
 
+    @pytest.mark.parametrize("address", ["+100", " 100", "\t100", "-100"])
+    def test_non_hex_characters_raise(self, address):
+        with pytest.raises(ValueError):
+            parse_address(address)
+
 
 # ---------------------------------------------------------------------------
 # parse_state
@@ -307,12 +312,18 @@ class TestHandleCanMessageMalformedFrames:
 
 
 class TestPendingGetTracker:
-    def test_discards_oldest_entry_when_bounded(self):
-        tracker = PendingGetTracker(max_pending=2, ttl_seconds=60)
+    def test_overflow_invalidates_correlation_until_cooldown(self):
+        now = [100.0]
+        tracker = PendingGetTracker(max_pending=2, ttl_seconds=5, clock=lambda: now[0])
         tracker.append((1, 0))
         tracker.append((1, 1))
         tracker.append((1, 2))
-        assert list(tracker) == [(1, 1), (1, 2)]
+        assert not tracker
+        tracker.append((1, 3))
+        assert not tracker
+        now[0] = 106.0
+        tracker.append((1, 4))
+        assert list(tracker) == [(1, 4)]
 
     def test_expires_stale_entries(self):
         now = [100.0]
@@ -628,10 +639,11 @@ class TestRequestHandler:
     def server_with_config(self, tmp_path):
         """Start a one-shot HTTP server serving a temporary config file."""
         cfg_file = tmp_path / "config.yaml"
-        cfg_file.write_text("- name: Test\n  address: '0100'\n")
+        cfg_file.write_text("- name: Test\n  address: '010a'\n")
 
-        # Point the handler at the temp config
+        # Point the handler at the temp config and serve the canonical form.
         RequestHandler.config_path = str(cfg_file)
+        RequestHandler.config_data = load_config(str(cfg_file))
 
         httpd = HTTPServer(("127.0.0.1", 0), RequestHandler)
         port = httpd.server_address[1]
@@ -642,8 +654,9 @@ class TestRequestHandler:
         yield port
 
         httpd.shutdown()
-        # Restore default after the test
+        # Restore defaults after the test
         RequestHandler.config_path = "config.yaml"
+        RequestHandler.config_data = None
 
     def test_config_yaml_returns_200(self, server_with_config):
         conn = http.client.HTTPConnection("127.0.0.1", server_with_config, timeout=5)
@@ -664,7 +677,8 @@ class TestRequestHandler:
         conn.request("GET", "/config.yaml")
         response = conn.getresponse()
         body = response.read().decode()
-        assert "0100" in body
+        assert "010A" in body
+        assert "010a" not in body
         conn.close()
 
     def test_unknown_path_returns_404(self, server_with_config):

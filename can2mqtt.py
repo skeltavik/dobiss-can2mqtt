@@ -1,5 +1,6 @@
 from collections import deque
 import os
+import re
 import time
 import can
 import paho.mqtt.client as mqtt
@@ -37,18 +38,34 @@ class PendingGetTracker:
     def __init__(self, max_pending=256, ttl_seconds=5.0, clock=time.monotonic):
         if max_pending < 1 or ttl_seconds <= 0:
             raise ValueError("max_pending and ttl_seconds must be positive")
-        self._entries = deque(maxlen=max_pending)
+        self._entries = deque()
+        self._max_pending = max_pending
         self._ttl_seconds = ttl_seconds
         self._clock = clock
+        self._blocked_until = 0.0
 
     def _purge(self):
-        cutoff = self._clock() - self._ttl_seconds
+        now = self._clock()
+        if now < self._blocked_until:
+            self._entries.clear()
+            return
+        self._blocked_until = 0.0
+        cutoff = now - self._ttl_seconds
         while self._entries and self._entries[0][0] < cutoff:
             self._entries.popleft()
 
     def append(self, address):
         self._purge()
-        self._entries.append((self._clock(), address))
+        now = self._clock()
+        if now < self._blocked_until:
+            return False
+        if len(self._entries) >= self._max_pending:
+            self._entries.clear()
+            self._blocked_until = now + self._ttl_seconds
+            logger.warning("GET correlation overflow; ignoring replies during cooldown")
+            return False
+        self._entries.append((now, address))
+        return True
 
     def popleft(self):
         self._purge()
@@ -102,7 +119,7 @@ def parse_address(address_str):
 
     Example: '0107' -> (1, 7)
     """
-    if not isinstance(address_str, str) or len(address_str) != 4:
+    if not isinstance(address_str, str) or re.fullmatch(r"[0-9A-Fa-f]{4}", address_str) is None:
         raise ValueError("Address must be a 4-character hex string")
     address = int(address_str, 16)
     module = address >> 8
@@ -252,14 +269,19 @@ class RequestHandler(BaseHTTPRequestHandler):
     """HTTP handler that serves the config file."""
 
     config_path = "config.yaml"
+    config_data: list[dict] | None = None
 
     def do_GET(self):
         if self.path == "/config.yaml":
             self.send_response(200)
             self.send_header("Content-type", "text/yaml")
             self.end_headers()
-            with open(self.config_path, "r") as file:
-                self.wfile.write(file.read().encode())
+            if self.config_data is None:
+                with open(self.config_path, "r", encoding="utf-8") as file:
+                    payload = file.read()
+            else:
+                payload = yaml.safe_dump(self.config_data, sort_keys=False)
+            self.wfile.write(payload.encode())
         else:
             self.send_response(404)
             self.end_headers()
@@ -296,6 +318,7 @@ if __name__ == "__main__":
     # HTTP server
     # Loopback is the secure default; set DOBISS_HTTP_HOST for trusted LAN access.
     RequestHandler.config_path = CONFIG_PATH
+    RequestHandler.config_data = config
     httpd = HTTPServer((HTTP_HOST, HTTP_PORT), RequestHandler)
     threading.Thread(target=httpd.serve_forever).start()
 

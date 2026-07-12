@@ -42,9 +42,8 @@ GET replies do not contain their source address. The bridge therefore correlates
 ```bash
 git clone https://github.com/skeltavik/dobiss-can2mqtt.git
 cd dobiss-can2mqtt
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install --require-hashes -r requirements.txt
+uv venv --python 3.10
+uv pip install --python .venv/bin/python --require-hashes -r requirements.txt
 cp config.example.yaml config.yaml
 ```
 
@@ -61,7 +60,7 @@ cp config.example.yaml config.yaml
   address: "0101"
 ```
 
-Each address must be a unique four-character hexadecimal string. Invalid structures, missing names, malformed addresses and duplicates make startup fail closed.
+Each address must be a unique four-character hexadecimal string. Addresses are normalized to uppercase for both MQTT topics and the Homey configuration endpoint. Invalid structures, missing names, malformed addresses and duplicates make startup fail closed.
 
 ## Runtime settings
 
@@ -149,7 +148,7 @@ Adapter-specific configuration may differ.
 Install the hash-pinned development environment:
 
 ```bash
-python -m pip install --require-hashes -r requirements-dev.txt
+uv pip install --python .venv/bin/python --require-hashes -r requirements-dev.txt
 ```
 
 Run the complete suite:
@@ -157,7 +156,7 @@ Run the complete suite:
 ```bash
 python -m pytest --cov=can2mqtt --cov-fail-under=85
 python -m bandit -q -r can2mqtt.py
-python -m pip_audit -r requirements.txt --progress-spinner off
+python -m pip_audit -r requirements.txt --require-hashes --disable-pip --progress-spinner off
 python scripts/check_pinned_dependencies.py
 ```
 
