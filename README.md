@@ -168,8 +168,8 @@ The tests include a virtual Dobiss controller on python-can's virtual bus, so MQ
 Edit `requirements.in` or `requirements-dev.in`, then regenerate both lockfiles with a trusted `uv` installation:
 
 ```bash
-uv pip compile requirements.in --generate-hashes --output-file requirements.txt
-uv pip compile requirements-dev.in --generate-hashes --output-file requirements-dev.txt
+uv pip compile requirements.in --python-version 3.10 --generate-hashes --output-file requirements.txt
+uv pip compile requirements-dev.in --python-version 3.10 --generate-hashes --output-file requirements-dev.txt
 python scripts/check_pinned_dependencies.py
 ```
 
