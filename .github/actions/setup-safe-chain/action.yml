@@ -8,8 +8,8 @@ runs:
       if: runner.os != 'Windows'
       shell: bash
       env:
-        AIKIDO_SAFE_CHAIN_VERSION: 1.5.21
-        SAFE_CHAIN_INSTALLER_SHA256: 03641bfdf4d5e3b5f0450120543579d578ed6354a8cff64bcfba8c8485f14474
+        AIKIDO_SAFE_CHAIN_VERSION: 1.5.24
+        SAFE_CHAIN_INSTALLER_SHA256: 99eb124a3404b3ac99e8b65406b87c4ee049c1d6c17757a7d04991ae60d16e69
       run: |
         set -euo pipefail
         installer="$RUNNER_TEMP/install-safe-chain.sh"
@@ -25,8 +25,8 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       env:
-        AIKIDO_SAFE_CHAIN_VERSION: 1.5.21
-        SAFE_CHAIN_INSTALLER_SHA256: 87c3aa85563e3c3e76305a8774235ae44b562dc8904bb2f989e24fdb57e63605
+        AIKIDO_SAFE_CHAIN_VERSION: 1.5.24
+        SAFE_CHAIN_INSTALLER_SHA256: 8ae6b00e57f96637aaa4aab136a9fc7f24855de15ddb5071bc615f533c996067
       run: |
         $ErrorActionPreference = 'Stop'
         $installer = Join-Path $env:RUNNER_TEMP 'install-safe-chain.ps1'
